@@ -1,0 +1,23 @@
+# Never commit real credentials. The workflow JSON carries placeholder
+# credential IDs only; n8n resolves them from its own encrypted store.
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# Regenerable dry-run / round-trip artifacts
+tools/emitted.json
+tools/roundtrip.json
+
+# n8n local state
+.n8n/
+database.sqlite
+
+node_modules/
+npm-debug.log*
+
+# OS
+Thumbs.db
+.DS_Store

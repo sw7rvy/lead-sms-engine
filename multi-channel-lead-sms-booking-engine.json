@@ -1,0 +1,1848 @@
+{
+  "id": "LeadSMSBooking01",
+  "name": "Multi-Channel Inbound Lead Automation & Multi-Turn SMS Booking Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## MODULE 1 — Client Onboarding\nTypeform webhook ➜ normalize ➜ UPSERT `client_configs`.\nUpsert key: `client_id` (`?on_conflict=client_id`, `Prefer: resolution=merge-duplicates`).",
+        "height": 260,
+        "width": 520,
+        "color": 4
+      },
+      "id": "note-m1",
+      "name": "Note M1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1720,
+        -760
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MODULE 2 — Multi-Channel Intake\n**A** Twilio voice status (`no-answer` / `busy` / `failed` / `completed`+0s)\n**B** IMAP lead notifications\n**C** Public web-form webhook\n**D** Twilio inbound SMS — closes the multi-turn loop.\nOpt-out keywords (STOP/CANCEL/HELP…) are dropped\nbefore they reach OpenAI; Twilio owns that list.\n\nAll four fan into one normalizer.",
+        "height": 1000,
+        "width": 700,
+        "color": 5
+      },
+      "id": "note-m2",
+      "name": "Note M2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1720,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MODULE 3 — Normalize + Tenant Resolve\nUnified schema, then PostgREST lookup on\n`twilio_phone_number` OR `client_id`.\nMiss ➜ logged, branch halts (no SMS).",
+        "height": 260,
+        "width": 460,
+        "color": 6
+      },
+      "id": "note-m3",
+      "name": "Note M3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -880,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MODULE 4 — Multi-Turn SMS Engine\nHistory ➜ messages array ➜ GPT-4o-mini (JSON mode)\n➜ hardened parse ➜ Twilio SMS ➜ persist both turns.",
+        "height": 240,
+        "width": 520,
+        "color": 3
+      },
+      "id": "note-m4",
+      "name": "Note M4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -100,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MODULE 5 — Booking + Ledger\nConfirmed ➜ Cal.com v1 booking (per-tenant API key)\nAll paths ➜ Google Sheets append.",
+        "height": 220,
+        "width": 460,
+        "color": 7
+      },
+      "id": "note-m5",
+      "name": "Note M5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## MODULE 6 — Cold-Lead Re-Engagement\nEvery 30 min: pull `lead_threads` where `status=nurturing`\nand `next_followup_at <= now` (tenant config joined inline).\n\n**Gate** enforces quiet hours in the *tenant* timezone\n(default 08:00–21:00), the per-client cadence ladder\n(`followup_cadence_hours`, default `{2,24,72}` hours),\nand a 10-lead cap per sweep.\n\n**Loop batch size = 1.** This is load-bearing: the shared\nModule 4/5 chain uses `.first()` throughout, so exactly one\nlead may be in flight per pass. `IF Followup Sweep Run`\nis the guard that keeps webhook traffic out of the loop.\n\nLadder exhausted ➜ `status=dead`, no further nudges.",
+        "height": 420,
+        "width": 700,
+        "color": 6
+      },
+      "id": "note-m6",
+      "name": "Note M6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1720,
+        1100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Compliance — STOP / START\nDropped inbound SMS still updates thread state:\nSTOP/CANCEL/UNSUBSCRIBE ➜ `opted_out` (nudges cease).\nSTART/UNSTOP ➜ back to `nurturing`, ladder reset.\nScoped by lead **and** tenant number, so opting out of\none client never silences another.",
+        "height": 260,
+        "width": 700,
+        "color": 3
+      },
+      "id": "note-optout",
+      "name": "Note OPTOUT",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1720,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ERROR SPINE\nEvery external call uses `onError: continueErrorOutput`\n+ 3 retries. Red edges funnel into one normalizer\nand a Supabase `error_log` insert. The Error Trigger\ncatches anything that still escapes.",
+        "height": 260,
+        "width": 520,
+        "color": 2
+      },
+      "id": "note-err",
+      "name": "Note ERR",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -880,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "client-onboarding",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "typeform-webhook",
+      "name": "Typeform Onboarding Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        -460
+      ],
+      "webhookId": "a1b2c3d4-0001-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// MODULE 1 :: Flatten a Typeform submission into a client_configs row.\nconst body = $json.body || $json;\nconst fr = body.form_response || body;\n\nfunction toE164(v) {\n  if (!v) return null;\n  const digits = String(v).replace(/[^0-9]/g, '');\n  if (!digits) return null;\n  if (String(v).trim().charAt(0) === '+') return '+' + digits;\n  if (digits.length === 10) return '+1' + digits;\n  return '+' + digits;\n}\n\nfunction answerValue(a) {\n  if (a.text !== undefined) return a.text;\n  if (a.email !== undefined) return a.email;\n  if (a.phone_number !== undefined) return a.phone_number;\n  if (a.url !== undefined) return a.url;\n  if (a.number !== undefined) return a.number;\n  if (a.boolean !== undefined) return a.boolean;\n  if (a.date !== undefined) return a.date;\n  if (a.choice && a.choice.label !== undefined) return a.choice.label;\n  if (a.choices && Array.isArray(a.choices.labels)) return a.choices.labels.join(', ');\n  return null;\n}\n\nlet flat = {};\nif (Array.isArray(fr.answers)) {\n  for (const a of fr.answers) {\n    const ref = a.field && (a.field.ref || a.field.id);\n    if (ref) flat[ref] = answerValue(a);\n  }\n}\n// Hidden fields win over answer refs, direct JSON posts win over both.\nflat = Object.assign({}, flat, (fr.hidden || {}), (fr.answers ? {} : body));\n\nfunction pick(keys, fallback) {\n  for (const k of keys) {\n    if (flat[k] !== undefined && flat[k] !== null && flat[k] !== '') return flat[k];\n  }\n  return fallback === undefined ? null : fallback;\n}\n\nlet businessHours = pick(['business_hours', 'businessHours'], null);\nif (typeof businessHours === 'string') {\n  try { businessHours = JSON.parse(businessHours); }\n  catch (e) { businessHours = { raw: businessHours }; }\n}\nif (!businessHours) {\n  businessHours = { mon_fri: '09:00-17:00', sat: 'closed', sun: 'closed' };\n}\n\nconst eventTypeIdRaw = pick(['event_type_id', 'eventTypeId']);\nconst profile = {\n  client_id: pick(['client_id', 'clientId']),\n  business_name: pick(['business_name', 'businessName']),\n  twilio_phone_number: toE164(pick(['twilio_phone_number', 'twilioPhoneNumber', 'twilio_number'])),\n  calcom_api_key: pick(['calcom_api_key', 'calcomApiKey', 'cal_api_key']),\n  event_type_id: eventTypeIdRaw === null ? null : Number(eventTypeIdRaw),\n  system_prompt_rules: pick(['system_prompt_rules', 'systemPromptRules', 'rules'], ''),\n  google_sheet_id: pick(['google_sheet_id', 'googleSheetId', 'sheet_id']),\n  business_hours: businessHours,\n  timezone: pick(['timezone', 'tz'], 'America/New_York'),\n  notification_email: pick(['notification_email', 'email']),\n  status: 'active',\n  onboarded_via: 'typeform',\n  typeform_response_id: (fr.token || body.event_id || null),\n  updated_at: new Date().toISOString(),\n};\n\nconst REQUIRED = ['client_id', 'business_name', 'twilio_phone_number', 'calcom_api_key', 'event_type_id', 'google_sheet_id'];\nconst missing = REQUIRED.filter((k) => profile[k] === null || profile[k] === undefined || profile[k] === '' || (k === 'event_type_id' && Number.isNaN(profile[k])));\nif (missing.length) {\n  throw new Error('Onboarding payload rejected - missing/invalid fields: ' + missing.join(', '));\n}\n\nreturn { json: profile };"
+      },
+      "id": "extract-client-profile",
+      "name": "Extract Client Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1460,
+        -460
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/client_configs?on_conflict=client_id",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=representation"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$json]) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "supabase-upsert-config",
+      "name": "Supabase Upsert Client Config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1220,
+        -460
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, client_id: $json.client_id, message: \"Client configuration saved.\" }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-onboarding",
+      "name": "Respond Onboarding OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -980,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "twilio-voice-status",
+        "responseMode": "onReceived",
+        "responseData": "noData",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "twilio-voice-webhook",
+      "name": "Twilio Voice Status Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        -40
+      ],
+      "webhookId": "a1b2c3d4-0002-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "missed-call-check",
+              "leftValue": "={{ ['no-answer','busy','failed','canceled'].includes($json.body.CallStatus) || ($json.body.CallStatus === 'completed' && Number($json.body.CallDuration || 0) === 0) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-missed-call",
+      "name": "IF Missed Call",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1460,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "postProcessAction": "read",
+        "format": "simple",
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\"]",
+          "allowUnauthorizedCerts": false,
+          "forceReconnect": 60
+        },
+        "downloadAttachments": false
+      },
+      "id": "imap-lead-trigger",
+      "name": "Email Lead Trigger (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        160
+      ],
+      "credentials": {
+        "imap": {
+          "id": "REPLACE_IMAP_CRED_ID",
+          "name": "IMAP account"
+        }
+      },
+      "alwaysOutputData": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "lead-email-filter",
+              "leftValue": "={{ /(new lead|new enquiry|new inquiry|contact form|quote request|website lead)/i.test(($json.subject || '') + ' ' + ($json.textPlain || '')) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-lead-email",
+      "name": "IF Lead Notification Email",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1460,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "web-lead",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "web-form-webhook",
+      "name": "Web Form Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        360
+      ],
+      "webhookId": "a1b2c3d4-0003-4000-8000-000000000003"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "twilio-inbound-sms",
+        "responseMode": "onReceived",
+        "responseData": "noData",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "twilio-inbound-sms-webhook",
+      "name": "Twilio Inbound SMS Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        560
+      ],
+      "webhookId": "a1b2c3d4-0004-4000-8000-000000000004"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-content",
+              "leftValue": "={{ String($json.body.Body || '').trim().length > 0 || Number($json.body.NumMedia || 0) > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "not-opt-out-keyword",
+              "leftValue": "={{ !['stop','stopall','unsubscribe','cancel','quit','end','revoke','optout','start','unstop','help','info'].includes(String($json.body.Body || '').trim().toLowerCase().replace(/[^a-z]/g, '')) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-actionable-sms",
+      "name": "IF Actionable Inbound SMS",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1460,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// MODULE 3.1 :: Unify Voice / Email / Web-Form payloads into one lead schema.\nfunction toE164(v) {\n  if (!v) return null;\n  const raw = String(v).trim();\n  const digits = raw.replace(/[^0-9]/g, '');\n  if (!digits) return null;\n  if (raw.charAt(0) === '+') return '+' + digits;\n  if (digits.length === 10) return '+1' + digits;\n  return '+' + digits;\n}\n\nfunction firstPhoneIn(text) {\n  if (!text) return null;\n  const m = String(text).match(/(\\+?\\d[\\d\\-\\.\\(\\)\\s]{8,}\\d)/);\n  return m ? toE164(m[1]) : null;\n}\n\nfunction clean(s, max) {\n  if (s === null || s === undefined) return '';\n  return String(s).replace(/\\s+/g, ' ').trim().slice(0, max || 1500);\n}\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const b = j.body || j;\n  let norm = null;\n\n  // ---- Entry D: Twilio inbound SMS (lead replies / multi-turn) -------\n  if (b.MessageSid || b.SmsMessageSid || (b.Body !== undefined && b.From && b.To && !b.CallSid)) {\n    const numMedia = Number(b.NumMedia || 0);\n    const bodyText = clean(b.Body, 1500);\n    norm = {\n      channel_source: 'sms',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: null,\n      lead_email: null,\n      raw_message: (bodyText || '(no text)') + (numMedia > 0 ? ' [lead attached ' + numMedia + ' media file(s)]' : ''),\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.MessageSid || b.SmsMessageSid || null,\n    };\n  }\n\n  // ---- Entry A: Twilio voice status callback ------------------------\n  else if (b.CallSid || b.CallStatus) {\n    const duration = Number(b.CallDuration || b.Duration || 0);\n    norm = {\n      channel_source: 'missed_call',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: clean(b.CallerName || b.FromCity ? (b.CallerName || 'Caller from ' + b.FromCity) : 'Unknown Caller', 120),\n      lead_email: null,\n      raw_message: 'Inbound call not answered. status=' + (b.CallStatus || 'unknown') + ' duration=' + duration + 's',\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.CallSid || null,\n    };\n  }\n\n  // ---- Entry B: IMAP lead-notification email ------------------------\n  else if (b.from !== undefined || b.subject !== undefined || b.textPlain !== undefined) {\n    const fromRaw = typeof b.from === 'object' && b.from !== null\n      ? (b.from.text || (Array.isArray(b.from.value) && b.from.value[0] ? b.from.value[0].address : ''))\n      : (b.from || '');\n    const bodyText = b.textPlain || b.text || b.textHtml || '';\n    const nameMatch = String(fromRaw).match(/^\\s*\"?([^\"<]+?)\"?\\s*</);\n    norm = {\n      channel_source: 'email',\n      lead_phone: firstPhoneIn(bodyText) || firstPhoneIn(b.subject),\n      client_phone: null,\n      lead_name: clean(nameMatch ? nameMatch[1] : (b.leadName || String(fromRaw).split('@')[0]), 120) || 'Email Lead',\n      lead_email: (String(fromRaw).match(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/) || [null])[0],\n      raw_message: clean(clean(b.subject, 200) + ' :: ' + bodyText, 1500),\n      client_id_or_number: b.client_id || (Array.isArray(b.to && b.to.value) && b.to.value[0] ? b.to.value[0].address : null),\n      client_id: b.client_id || null,\n      external_id: b.messageId || b.uid || null,\n    };\n  }\n\n  // ---- Entry C: Website form / widget --------------------------------\n  else {\n    norm = {\n      channel_source: clean(b.source || 'web_form', 40),\n      lead_phone: toE164(b.phone || b.phone_number || b.tel),\n      client_phone: toE164(b.client_phone || b.twilio_phone_number),\n      lead_name: clean(b.name || b.full_name || ((b.first_name || '') + ' ' + (b.last_name || '')), 120) || 'Web Lead',\n      lead_email: b.email || null,\n      raw_message: clean(b.message || b.notes || b.comments || b.service || 'New website enquiry', 1500),\n      client_id_or_number: b.client_id || toE164(b.client_phone || b.twilio_phone_number),\n      client_id: b.client_id || null,\n      external_id: b.submission_id || null,\n    };\n  }\n\n  norm.received_at = new Date().toISOString();\n  norm.n8n_execution_id = $execution.id;\n  // Set by MODULE 6 only; 0 for every genuine inbound lead.\n  norm.followup_step = Number(b.followup_step || 0);\n\n  if (!norm.lead_phone) {\n    // No reachable SMS number -> nothing for Module 4 to do. Fail loudly.\n    throw new Error('Lead from channel \"' + norm.channel_source + '\" has no resolvable phone number. Payload: ' + JSON.stringify(b).slice(0, 400));\n  }\n  if (!norm.client_id_or_number) {\n    throw new Error('Cannot resolve tenant for lead ' + norm.lead_phone + ' (channel ' + norm.channel_source + ').');\n  }\n\n  out.push({ json: norm });\n}\n\nreturn out;"
+      },
+      "id": "normalize-lead",
+      "name": "Normalize Lead Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1180,
+        160
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/client_configs?select=*&status=eq.active&limit=1&or=(twilio_phone_number.eq.' + encodeURIComponent($json.client_id_or_number) + ',client_id.eq.' + encodeURIComponent($json.client_id_or_number) + ')' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "fetch-client-config",
+      "name": "Fetch Client Config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -940,
+        160
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "config-found",
+              "leftValue": "={{ $json.client_id !== undefined && $json.client_id !== null && $json.client_id !== \"\" }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-config-found",
+      "name": "IF Client Config Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -700,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Tenant resolution miss -> log and halt this branch (no SMS is sent).\nconst lead = $('Normalize Lead Payload').first().json;\nreturn [{\n  json: {\n    workflow_id: $workflow.id,\n    workflow_name: $workflow.name,\n    execution_id: $execution.id,\n    failed_node: 'Fetch Client Config',\n    error_message: 'No active client_configs row matched \"' + lead.client_id_or_number + '\" (channel: ' + lead.channel_source + ').',\n    error_stack: null,\n    http_status: 404,\n    payload: JSON.stringify(lead).slice(0, 2000),\n    client_id: null,\n    lead_phone: lead.lead_phone,\n    severity: 'warning',\n    created_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "flag-unknown-client",
+      "name": "Flag Unknown Client",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/conversation_history?select=role,content,created_at&order=created_at.asc&limit=40&client_id=eq.' + encodeURIComponent($json.client_id) + '&lead_phone=eq.' + encodeURIComponent($('Normalize Lead Payload').first().json.lead_phone) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "fetch-history",
+      "name": "Fetch Conversation History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -460,
+        60
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// MODULE 4.2 :: Assemble the OpenAI Chat Completions payload.\nconst cfg = $('Fetch Client Config').first().json;\nconst lead = $('Normalize Lead Payload').first().json;\n\nconst history = $input.all()\n  .map((i) => i.json)\n  .filter((r) => r && (r.role === 'user' || r.role === 'assistant') && r.content)\n  .slice(-20)\n  .map((r) => ({ role: r.role, content: String(r.content).slice(0, 1000) }));\n\nconst turnCount = history.filter((m) => m.role === 'assistant').length;\nconst bookingLink = 'https://cal.com/' + (cfg.calcom_username || String(cfg.business_name || 'booking').toLowerCase().replace(/[^a-z0-9]+/g, '-')) + '?duration=30';\n\nconst nowIso = new Date().toISOString();\nconst hours = typeof cfg.business_hours === 'string' ? cfg.business_hours : JSON.stringify(cfg.business_hours || {});\n\nconst system = [\n  'You are the SMS booking assistant for ' + (cfg.business_name || 'the business') + '.',\n  'Current UTC time: ' + nowIso + '. Business timezone: ' + (cfg.timezone || 'America/New_York') + '.',\n  'Business hours (JSON): ' + hours,\n  'Booking link if the lead prefers self-service: ' + bookingLink,\n  '',\n  'CLIENT RULES (authoritative, follow exactly):',\n  String(cfg.system_prompt_rules || 'Qualify the lead, then book an appointment.'),\n  '',\n  'OBJECTIVES, in order:',\n  '1. Qualify the lead against the client rules above (service needed, urgency, location/budget if the rules require it).',\n  '2. Once qualified, propose a concrete appointment slot inside business hours. Never invent slots outside them.',\n  '3. When the lead accepts a specific date AND time, confirm it and set booking_intent to \"confirmed\".',\n  '4. Collect an email address before confirming - the calendar booking requires it.',\n  '',\n  'STYLE: friendly, direct, human. No emoji spam, no corporate filler, never say you are an AI.',\n  'Keep \"reply\" under 160 characters whenever possible; 320 is the hard limit.',\n  'This is turn ' + (turnCount + 1) + ' of the conversation. Do not repeat questions already answered above.',\n  '',\n  'OUTPUT: respond with a single JSON object and nothing else:',\n  '{',\n  '  \"reply\": \"the SMS text to send\",',\n  '  \"qualified\": true|false,',\n  '  \"booking_intent\": \"none\" | \"proposed\" | \"confirmed\",',\n  '  \"booking_start\": \"ISO-8601 datetime with offset, or null\",',\n  '  \"duration_minutes\": 30,',\n  '  \"lead_name\": \"best known name or null\",',\n  '  \"lead_email\": \"best known email or null\",',\n  '  \"notes\": \"short internal summary of the lead for the CRM\"',\n  '}',\n  'booking_start MUST be null unless booking_intent is \"confirmed\".',\n].join('\\n');\n\nconst messages = [{ role: 'system', content: system }];\n\nconst cadence = Array.isArray(cfg.followup_cadence_hours) && cfg.followup_cadence_hours.length\n  ? cfg.followup_cadence_hours\n  : [2, 24, 72];\n\nif (lead.channel_source === 'followup') {\n  // MODULE 6 re-engagement: the lead never replied, so there is no new user turn.\n  const step = Number(lead.followup_step || 0);\n  const attempt = step + 1;\n  const isFinal = attempt >= cadence.length;\n  messages.push(...history);\n  messages.push({\n    role: 'system',\n    content: [\n      'RE-ENGAGEMENT TURN. The lead has not replied to your last message.',\n      'This is follow-up attempt ' + attempt + ' of ' + cadence.length + '.',\n      'Write ONE short SMS that references the specific thing they enquired about,',\n      'gives a concrete reason to reply now (a named slot, or the booking link), and stays under 160 characters.',\n      'Do NOT open with \"Just following up\" or \"Checking in\". Do NOT repeat any earlier message.',\n      'Never mention automation, reminders, or that this is a follow-up.',\n      isFinal\n        ? 'This is the FINAL attempt: close warmly, leave the door open, do not ask a new qualifying question.'\n        : 'Keep it light - one easy question or one concrete slot to accept.',\n      'booking_intent MUST be \"none\" or \"proposed\". It can never be \"confirmed\" here, because the lead has not responded.',\n    ].join(' '),\n  });\n} else if (history.length === 0) {\n  messages.push({\n    role: 'user',\n    content: 'INBOUND LEAD (' + lead.channel_source + ') from ' + lead.lead_phone +\n      '. Name: ' + (lead.lead_name || 'unknown') +\n      '. Email: ' + (lead.lead_email || 'unknown') +\n      '. Context: ' + lead.raw_message +\n      '. Open the conversation - acknowledge the enquiry and start qualifying.',\n  });\n} else {\n  messages.push(...history);\n  messages.push({ role: 'user', content: String(lead.raw_message || '(no message body)') });\n}\n\nreturn [{\n  json: {\n    model: 'gpt-4o-mini',\n    temperature: 0.4,\n    max_tokens: 400,\n    response_format: { type: 'json_object' },\n    messages,\n    _meta: {\n      client_id: cfg.client_id,\n      lead_phone: lead.lead_phone,\n      turn: turnCount + 1,\n      history_len: history.length,\n      booking_link: bookingLink,\n    },\n  },\n}];"
+      },
+      "id": "build-openai-messages",
+      "name": "Build OpenAI Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        60
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, temperature: $json.temperature, max_tokens: $json.max_tokens, response_format: $json.response_format, messages: $json.messages }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "openai-chat",
+      "name": "OpenAI GPT-4o-mini",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        20,
+        60
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_OPENAI_CRED_ID",
+          "name": "OpenAi account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// MODULE 4.4 :: Parse + harden the model output before it touches Twilio.\nconst cfg = $('Fetch Client Config').first().json;\nconst lead = $('Normalize Lead Payload').first().json;\nconst meta = $('Build OpenAI Messages').first().json._meta || {};\n\n// $json is only defined in runOnceForEachItem mode; this node runs over all items.\nconst first = $input.first();\nconst resp = (first && first.json) || {};\nconst choice = (resp.choices && resp.choices[0]) || {};\nconst raw = (choice.message && choice.message.content) || '';\n\nlet ai;\ntry {\n  ai = JSON.parse(raw);\n} catch (e) {\n  const m = String(raw).match(/\\{[\\s\\S]*\\}/);\n  try { ai = JSON.parse(m ? m[0] : '{}'); } catch (e2) { ai = {}; }\n}\n\nlet reply = String(ai.reply || '').replace(/\\s+/g, ' ').trim();\nif (!reply) {\n  reply = 'Thanks for reaching out to ' + (cfg.business_name || 'us') + '! What can we help you with, and when works best for you?';\n}\nif (reply.length > 320) reply = reply.slice(0, 317).trim() + '...';\n\nconst intent = ['none', 'proposed', 'confirmed'].includes(ai.booking_intent) ? ai.booking_intent : 'none';\nlet start = ai.booking_start || null;\nif (start) {\n  const d = new Date(start);\n  if (isNaN(d.getTime()) || d.getTime() < Date.now() - 60000) start = null;\n}\nlet bookingIntent = (intent === 'confirmed' && start) ? 'confirmed' : (intent === 'confirmed' ? 'proposed' : intent);\n\n// A re-engagement nudge can never confirm a booking - the lead has not answered.\nif (lead.channel_source === 'followup' && bookingIntent === 'confirmed') {\n  bookingIntent = 'proposed';\n  start = null;\n}\n\nconst leadEmail = ai.lead_email || lead.lead_email || null;\n\nreturn [{\n  json: {\n    client_id: cfg.client_id,\n    business_name: cfg.business_name,\n    twilio_phone_number: cfg.twilio_phone_number,\n    calcom_api_key: cfg.calcom_api_key,\n    event_type_id: cfg.event_type_id,\n    google_sheet_id: cfg.google_sheet_id,\n    timezone: cfg.timezone || 'America/New_York',\n    followup_cadence_hours: (Array.isArray(cfg.followup_cadence_hours) && cfg.followup_cadence_hours.length) ? cfg.followup_cadence_hours : [2, 24, 72],\n    followup_step: Number(lead.followup_step || 0),\n\n    lead_phone: lead.lead_phone,\n    client_phone: lead.client_phone || cfg.twilio_phone_number,\n    lead_name: ai.lead_name || lead.lead_name || 'Unknown Lead',\n    lead_email: leadEmail,\n    channel_source: lead.channel_source,\n    inbound_message: lead.raw_message,\n\n    reply,\n    qualified: ai.qualified === true,\n    booking_intent: bookingIntent,\n    booking_start: bookingIntent === 'confirmed' ? start : null,\n    duration_minutes: Number(ai.duration_minutes || 30),\n    notes: String(ai.notes || '').slice(0, 500),\n    turn: meta.turn || 1,\n    booking_link: meta.booking_link || null,\n    tokens_used: (resp.usage && resp.usage.total_tokens) || 0,\n    // Cal.com cannot book without an email; degrade to \"proposed\" so the bot keeps asking.\n    booking_ready: bookingIntent === 'confirmed' && !!start && !!leadEmail,\n  },\n}];"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        60
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $json.twilio_phone_number }}",
+        "to": "={{ $json.lead_phone }}",
+        "toWhatsapp": false,
+        "message": "={{ $json.reply }}",
+        "options": {}
+      },
+      "id": "twilio-send-sms",
+      "name": "Twilio Send SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        500,
+        60
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE_TWILIO_CRED_ID",
+          "name": "Twilio account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/conversation_history",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(\n($('Parse AI Response').first().json.channel_source === 'followup' ? [] : [\n  {\n    client_id: $('Parse AI Response').first().json.client_id,\n    lead_phone: $('Parse AI Response').first().json.lead_phone,\n    role: 'user',\n    content: $('Parse AI Response').first().json.inbound_message,\n    channel_source: $('Parse AI Response').first().json.channel_source,\n    turn: $('Parse AI Response').first().json.turn,\n    execution_id: $execution.id,\n    created_at: new Date(Date.now() - 1000).toISOString()\n  }\n]).concat([\n  {\n    client_id: $('Parse AI Response').first().json.client_id,\n    lead_phone: $('Parse AI Response').first().json.lead_phone,\n    role: 'assistant',\n    content: $('Parse AI Response').first().json.reply,\n    channel_source: 'sms',\n    turn: $('Parse AI Response').first().json.turn,\n    booking_intent: $('Parse AI Response').first().json.booking_intent,\n    is_followup: $('Parse AI Response').first().json.channel_source === 'followup',\n    followup_step: $('Parse AI Response').first().json.followup_step,\n    twilio_sid: $json.sid || null,\n    execution_id: $execution.id,\n    created_at: new Date().toISOString()\n  }\n])\n) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "persist-conversation",
+      "name": "Persist Conversation Turn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        60
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "booking-ready",
+              "leftValue": "={{ $('Parse AI Response').first().json.booking_ready === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-booking-confirmed",
+      "name": "IF Booking Confirmed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.cal.com/v1/bookings?apiKey=' + $('Parse AI Response').first().json.calcom_api_key }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  eventTypeId: Number($('Parse AI Response').first().json.event_type_id),\n  start: $('Parse AI Response').first().json.booking_start,\n  timeZone: $('Parse AI Response').first().json.timezone,\n  language: 'en',\n  title: 'Appointment - ' + $('Parse AI Response').first().json.lead_name,\n  description: $('Parse AI Response').first().json.notes,\n  status: 'ACCEPTED',\n  responses: {\n    name: $('Parse AI Response').first().json.lead_name,\n    email: $('Parse AI Response').first().json.lead_email,\n    smsReminderNumber: $('Parse AI Response').first().json.lead_phone,\n    notes: $('Parse AI Response').first().json.notes,\n    location: { value: 'phone', optionValue: $('Parse AI Response').first().json.lead_phone }\n  },\n  metadata: {\n    source: $('Parse AI Response').first().json.channel_source,\n    client_id: $('Parse AI Response').first().json.client_id,\n    n8n_execution: $execution.id\n  }\n}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "calcom-create-booking",
+      "name": "Cal.com Create Booking",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1220,
+        -40
+      ],
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// MODULE 5.3 :: Build the Google Sheets audit row (runs on booked AND pending paths).\nconst ai = $('Parse AI Response').first().json;\n\nlet booking = null;\ntry {\n  const b = $('Cal.com Create Booking').first().json;\n  booking = (b && (b.booking || b.data || b)) || null;\n  if (booking && booking.error) booking = null;\n} catch (e) {\n  booking = null;\n}\n\nconst bookingId = booking ? (booking.uid || booking.id || null) : null;\nconst bookingTime = booking\n  ? (booking.startTime || booking.start || ai.booking_start)\n  : (ai.booking_start || '');\n\n// ---- follow-up ladder state --------------------------------------\nconst isFollowup = ai.channel_source === 'followup';\nconst cadence = (Array.isArray(ai.followup_cadence_hours) && ai.followup_cadence_hours.length)\n  ? ai.followup_cadence_hours\n  : [2, 24, 72];\n\n// A genuine reply resets the ladder; a nudge advances it.\nconst followupCount = isFollowup ? Number(ai.followup_step || 0) + 1 : 0;\n\nlet threadStatus = 'nurturing';\nlet nextFollowupAt = null;\nif (bookingId) {\n  threadStatus = 'booked';\n} else if (followupCount >= cadence.length) {\n  threadStatus = 'dead';\n} else {\n  nextFollowupAt = new Date(Date.now() + Number(cadence[followupCount] || 24) * 3600000).toISOString();\n}\n\nconst status = bookingId\n  ? 'Booked'\n  : (ai.booking_intent === 'confirmed' ? 'Booking Failed'\n    : (threadStatus === 'dead' ? 'Cold - No Reply'\n      : (isFollowup ? 'Nurturing (F/U ' + followupCount + '/' + cadence.length + ')'\n        : (ai.qualified ? 'Qualified - Pending' : 'Pending'))));\n\nconst notes = [\n  ai.notes,\n  'Turn ' + ai.turn,\n  isFollowup ? 'Re-engagement attempt ' + followupCount : 'Last inbound: ' + String(ai.inbound_message || '').slice(0, 160),\n  bookingId ? 'Cal.com uid: ' + bookingId : null,\n  nextFollowupAt ? 'Next nudge: ' + nextFollowupAt : 'No further nudges',\n].filter(Boolean).join(' | ').slice(0, 900);\n\nconst thread = {\n  client_id: ai.client_id,\n  lead_phone: ai.lead_phone,\n  client_phone: ai.client_phone,\n  lead_name: ai.lead_name,\n  lead_email: ai.lead_email,\n  channel_source: isFollowup ? undefined : ai.channel_source,\n  status: threadStatus,\n  followup_count: followupCount,\n  next_followup_at: nextFollowupAt,\n  qualified: ai.qualified === true,\n  booking_intent: ai.booking_intent,\n  booking_uid: bookingId,\n  last_outbound_at: new Date().toISOString(),\n  updated_at: new Date().toISOString(),\n};\n// Omitted keys are left untouched by the PostgREST upsert - a nudge must not\n// overwrite last_inbound_at or the channel the lead originally arrived on.\nif (!isFollowup) thread.last_inbound_at = new Date().toISOString();\nfor (const k of Object.keys(thread)) { if (thread[k] === undefined) delete thread[k]; }\n\nreturn [{\n  json: {\n    google_sheet_id: ai.google_sheet_id,\n    client_id: ai.client_id,\n    Timestamp: new Date().toISOString(),\n    'Lead Name': ai.lead_name,\n    Phone: ai.lead_phone,\n    'Source Channel': ai.channel_source,\n    Status: status,\n    'Booking Time': bookingTime || '',\n    Notes: notes,\n    _thread: thread,\n  },\n}];"
+      },
+      "id": "build-sheet-row",
+      "name": "Build Sheet Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        60
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.google_sheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.Timestamp }}",
+            "Lead Name": "={{ $json[\"Lead Name\"] }}",
+            "Phone": "={{ $json.Phone }}",
+            "Source Channel": "={{ $json[\"Source Channel\"] }}",
+            "Status": "={{ $json.Status }}",
+            "Booking Time": "={{ $json[\"Booking Time\"] }}",
+            "Notes": "={{ $json.Notes }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Lead Name",
+              "displayName": "Lead Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source Channel",
+              "displayName": "Source Channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Booking Time",
+              "displayName": "Booking Time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "append-google-sheet",
+      "name": "Append Lead To Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1700,
+        60
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_GSHEETS_CRED_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/lead_threads?on_conflict=client_id,lead_phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$('Build Sheet Row').first().json._thread]) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "upsert-lead-thread",
+      "name": "Upsert Lead Thread State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1940,
+        60
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-sweep-run",
+              "leftValue": "={{ $('Normalize Lead Payload').first().json.channel_source === 'followup' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-followup-sweep-run",
+      "name": "IF Followup Sweep Run",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2180,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "cold-sweep-schedule",
+      "name": "Cold Lead Sweep Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1700,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/lead_threads?select=*,client_configs!inner(*)&status=eq.nurturing&client_configs.status=eq.active&client_configs.followup_enabled=is.true&order=next_followup_at.asc&limit=100&next_followup_at=lte.' + encodeURIComponent(new Date().toISOString()) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 20000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "fetch-cold-threads",
+      "name": "Fetch Cold Threads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1460,
+        1180
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// MODULE 6.2 :: Cadence + quiet-hours gate. Nothing leaves here that we are\n// not legally and contractually allowed to send right now.\nconst MAX_PER_SWEEP = 10;\nconst now = new Date();\n\nfunction tzHour(tz) {\n  try {\n    return Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(now));\n  } catch (e) {\n    return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }).format(now));\n  }\n}\nfunction tzDay(tz) {\n  try {\n    return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(now).toLowerCase();\n  } catch (e) { return 'mon'; }\n}\n\nconst due = [];\nconst skipped = [];\n\nfor (const item of $input.all()) {\n  const r = item.json || {};\n  if (!r.lead_phone || !r.client_id) continue;\n\n  // PostgREST embeds a many-to-one relation as an object; tolerate an array too.\n  const cfgRaw = r.client_configs;\n  const cfg = Array.isArray(cfgRaw) ? cfgRaw[0] : cfgRaw;\n  if (!cfg || !cfg.client_id) { skipped.push([r.lead_phone, 'no client config']); continue; }\n  if (cfg.status !== 'active' || cfg.followup_enabled === false) { skipped.push([r.lead_phone, 'client paused']); continue; }\n  if (r.status !== 'nurturing') { skipped.push([r.lead_phone, 'thread ' + r.status]); continue; }\n\n  const cadence = (Array.isArray(cfg.followup_cadence_hours) && cfg.followup_cadence_hours.length)\n    ? cfg.followup_cadence_hours\n    : [2, 24, 72];\n  const step = Number(r.followup_count || 0);\n  if (step >= cadence.length) { skipped.push([r.lead_phone, 'ladder exhausted']); continue; }\n\n  const tz = cfg.timezone || 'America/New_York';\n  const qStart = cfg.quiet_hours_start === null || cfg.quiet_hours_start === undefined ? 8 : Number(cfg.quiet_hours_start);\n  const qEnd = cfg.quiet_hours_end === null || cfg.quiet_hours_end === undefined ? 21 : Number(cfg.quiet_hours_end);\n  const hour = tzHour(tz);\n  if (hour < qStart || hour >= qEnd) { skipped.push([r.lead_phone, 'quiet hours ' + hour + ':00 ' + tz]); continue; }\n  if (cfg.followup_skip_weekends === true && ['sat', 'sun'].includes(tzDay(tz))) {\n    skipped.push([r.lead_phone, 'weekend']);\n    continue;\n  }\n\n  const lastOut = r.last_outbound_at ? new Date(r.last_outbound_at) : null;\n  const hoursSilent = lastOut ? Math.round((now.getTime() - lastOut.getTime()) / 3600000) : null;\n\n  due.push({\n    json: {\n      // Shaped for the web-form branch of Normalize Lead Payload - one code path, no duplication.\n      source: 'followup',\n      client_id: r.client_id,\n      client_phone: r.client_phone || cfg.twilio_phone_number,\n      phone: r.lead_phone,\n      name: r.lead_name || null,\n      email: r.lead_email || null,\n      followup_step: step,\n      message: 'RE-ENGAGEMENT TRIGGER: attempt ' + (step + 1) + ' of ' + cadence.length +\n        (hoursSilent === null ? '.' : ('. Lead has been silent for ~' + hoursSilent + 'h.')),\n      _sort: r.next_followup_at || r.last_outbound_at || '',\n    },\n  });\n}\n\ndue.sort((a, b) => String(a.json._sort).localeCompare(String(b.json._sort)));\nconst batch = due.slice(0, MAX_PER_SWEEP);\n\nconsole.log('cold sweep: ' + batch.length + ' due / ' + due.length + ' eligible / ' + skipped.length + ' skipped');\nif (skipped.length) console.log('skip reasons: ' + JSON.stringify(skipped.slice(0, 20)));\n\nreturn batch;"
+      },
+      "id": "gate-quiet-hours",
+      "name": "Gate Quiet Hours & Cadence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1220,
+        1180
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-cold-leads",
+      "name": "Loop Over Cold Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -980,
+        1180
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "sweep-complete",
+      "name": "Sweep Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -740,
+        1300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Compliance: a dropped inbound SMS may still be an opt-out or an opt-in.\n// Everything else (empty body, HELP, INFO) needs no state change.\n// $json is only defined in runOnceForEachItem mode; this node runs over all items.\nconst src = ($input.first() || { json: {} }).json || {};\nconst b = src.body || src;\nconst kw = String(b.Body || '').trim().toLowerCase().replace(/[^a-z]/g, '');\n\nconst OPT_OUT = ['stop', 'stopall', 'unsubscribe', 'cancel', 'quit', 'end', 'revoke', 'optout'];\nconst OPT_IN = ['start', 'unstop'];\n\nif (!OPT_OUT.includes(kw) && !OPT_IN.includes(kw)) return [];\n\nfunction toE164(v) {\n  if (!v) return null;\n  const raw = String(v).trim();\n  const digits = raw.replace(/[^0-9]/g, '');\n  if (!digits) return null;\n  if (raw.charAt(0) === '+') return '+' + digits;\n  if (digits.length === 10) return '+1' + digits;\n  return '+' + digits;\n}\n\nconst optingOut = OPT_OUT.includes(kw);\n\nreturn [{\n  json: {\n    lead_phone: toE164(b.From),\n    client_phone: toE164(b.To),\n    keyword: kw,\n    new_status: optingOut ? 'opted_out' : 'nurturing',\n    // Re-opt-in restarts the ladder an hour out; opt-out kills it outright.\n    next_followup_at: optingOut ? null : new Date(Date.now() + 3600000).toISOString(),\n    followup_count: optingOut ? undefined : 0,\n    updated_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "handle-non-actionable-sms",
+      "name": "Handle Non-Actionable SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1220,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/lead_threads?lead_phone=eq.' + encodeURIComponent($json.lead_phone) + '&client_phone=eq.' + encodeURIComponent($json.client_phone) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $json.new_status, next_followup_at: $json.next_followup_at, updated_at: $json.updated_at, opt_out_keyword: $json.keyword }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "mark-thread-opted-out",
+      "name": "Apply SMS Opt-Out / Opt-In",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -980,
+        760
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Workflow Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1180,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Shared error funnel: node-level error outputs + the global Error Trigger.\n// $json is only defined in runOnceForEachItem mode; this node runs over all items.\nconst j = ($input.first() || { json: {} }).json || {};\nconst err = j.error || j;\nconst trig = j.execution || {};\n\nfunction str(v, n) {\n  if (v === null || v === undefined) return null;\n  if (typeof v === 'object') { try { return JSON.stringify(v).slice(0, n || 2000); } catch (e) { return String(v).slice(0, n || 2000); } }\n  return String(v).slice(0, n || 2000);\n}\n\nlet leadPhone = null;\nlet clientId = null;\ntry { leadPhone = $('Normalize Lead Payload').first().json.lead_phone; } catch (e) {}\ntry { clientId = $('Fetch Client Config').first().json.client_id; } catch (e) {}\n\nreturn [{\n  json: {\n    workflow_id: $workflow.id,\n    workflow_name: $workflow.name,\n    execution_id: $execution.id,\n    failed_node: (j.node && j.node.name) || err.node || trig.lastNodeExecuted || 'unknown',\n    error_message: str(err.message || trig.error && trig.error.message || 'Unknown error', 1000),\n    error_stack: str(err.stack || (trig.error && trig.error.stack), 4000),\n    http_status: (err.httpCode || err.status || (err.context && err.context.statusCode)) || null,\n    payload: str(j, 4000),\n    client_id: clientId,\n    lead_phone: leadPhone,\n    severity: 'error',\n    created_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "handle-api-error",
+      "name": "Handle API Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/error_log",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([$json]) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "log-error-supabase",
+      "name": "Log Error To Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -220,
+        900
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Typeform Onboarding Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Client Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Client Profile": {
+      "main": [
+        [
+          {
+            "node": "Supabase Upsert Client Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Upsert Client Config": {
+      "main": [
+        [
+          {
+            "node": "Respond Onboarding OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twilio Voice Status Webhook": {
+      "main": [
+        [
+          {
+            "node": "IF Missed Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Missed Call": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Email Lead Trigger (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "IF Lead Notification Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Lead Notification Email": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Web Form Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twilio Inbound SMS Webhook": {
+      "main": [
+        [
+          {
+            "node": "IF Actionable Inbound SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Actionable Inbound SMS": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Non-Actionable SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Non-Actionable SMS": {
+      "main": [
+        [
+          {
+            "node": "Apply SMS Opt-Out / Opt-In",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply SMS Opt-Out / Opt-In": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cold Lead Sweep Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Cold Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Cold Threads": {
+      "main": [
+        [
+          {
+            "node": "Gate Quiet Hours & Cadence",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate Quiet Hours & Cadence": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Cold Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Cold Leads": {
+      "main": [
+        [
+          {
+            "node": "Sweep Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Lead Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lead Payload": {
+      "main": [
+        [
+          {
+            "node": "Fetch Client Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Client Config": {
+      "main": [
+        [
+          {
+            "node": "IF Client Config Found",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Client Config Found": {
+      "main": [
+        [
+          {
+            "node": "Fetch Conversation History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag Unknown Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Unknown Client": {
+      "main": [
+        [
+          {
+            "node": "Log Error To Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Conversation History": {
+      "main": [
+        [
+          {
+            "node": "Build OpenAI Messages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OpenAI Messages": {
+      "main": [
+        [
+          {
+            "node": "OpenAI GPT-4o-mini",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI GPT-4o-mini": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Twilio Send SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twilio Send SMS": {
+      "main": [
+        [
+          {
+            "node": "Persist Conversation Turn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Conversation Turn": {
+      "main": [
+        [
+          {
+            "node": "IF Booking Confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Booking Confirmed": {
+      "main": [
+        [
+          {
+            "node": "Cal.com Create Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cal.com Create Booking": {
+      "main": [
+        [
+          {
+            "node": "Build Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sheet Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sheet Row": {
+      "main": [
+        [
+          {
+            "node": "Append Lead To Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Lead To Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead Thread State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Lead Thread State": {
+      "main": [
+        [
+          {
+            "node": "IF Followup Sweep Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Followup Sweep Run": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Cold Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Workflow Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle API Error": {
+      "main": [
+        [
+          {
+            "node": "Log Error To Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": 900,
+    "timezone": "America/New_York",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": {
+    "instanceId": "REPLACE_WITH_YOUR_N8N_INSTANCE_ID",
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "id": "lead-automation",
+      "name": "lead-automation"
+    },
+    {
+      "id": "sms-booking",
+      "name": "sms-booking"
+    },
+    {
+      "id": "multi-tenant",
+      "name": "multi-tenant"
+    }
+  ],
+  "versionId": "00000000-0000-4000-8000-000000000000"
+}
