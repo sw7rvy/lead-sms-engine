@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lead SMS Booking Engine</title>
+<meta name="description" content="Multi-tenant n8n workflow: inbound leads from missed calls, SMS, email and web forms, qualified over multi-turn SMS with GPT-4o-mini, booked into Cal.com.">
+<style>
+  :root{
+    --bg:#fbfaf8; --panel:#fff; --ink:#16181d; --muted:#5c6370;
+    --line:#e4e2dd; --accent:#c2410c; --accent-soft:#fff1e9;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]){
+      --bg:#0e1013; --panel:#15181d; --ink:#e8e6e3; --muted:#9aa1ad;
+      --line:#262b33; --accent:#fb923c; --accent-soft:#26170e;
+    }
+  }
+  :root[data-theme=dark]{
+    --bg:#0e1013; --panel:#15181d; --ink:#e8e6e3; --muted:#9aa1ad;
+    --line:#262b33; --accent:#fb923c; --accent-soft:#26170e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:860px;margin:0 auto;padding:0 24px}
+  header{padding:72px 0 44px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.12em;
+           text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+  h1{margin:0 0 16px;font-size:clamp(30px,5.5vw,46px);line-height:1.1;letter-spacing:-.02em}
+  .lede{margin:0;font-size:clamp(16px,2.2vw,19px);color:var(--muted);max-width:60ch}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+  .btn{display:inline-block;padding:10px 18px;border-radius:7px;text-decoration:none;
+       font-size:15px;font-weight:500;border:1px solid var(--line);color:var(--ink);
+       background:var(--panel);transition:border-color .15s}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{opacity:.9}
+  section{padding:48px 0;border-bottom:1px solid var(--line)}
+  h2{margin:0 0 8px;font-size:13px;font-family:var(--mono);letter-spacing:.1em;
+     text-transform:uppercase;color:var(--muted);font-weight:600}
+  h3{margin:26px 0 8px;font-size:19px;letter-spacing:-.01em}
+  p{margin:0 0 14px;max-width:66ch}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+         gap:1px;background:var(--line);border:1px solid var(--line);border-radius:9px;
+         overflow:hidden;margin:22px 0 0}
+  .stat{background:var(--panel);padding:18px 20px}
+  .stat b{display:block;font-size:26px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat span{font-size:12.5px;color:var(--muted)}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+      padding:18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+      line-height:1.5;margin:18px 0}
+  code{font-family:var(--mono);font-size:.9em;background:var(--accent-soft);
+       color:var(--accent);padding:1.5px 5px;border-radius:4px}
+  pre code{background:none;color:inherit;padding:0}
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14.5px;display:block;overflow-x:auto}
+  th,td{text-align:left;padding:9px 14px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+  ul{margin:0 0 14px;padding-left:20px;max-width:66ch}
+  li{margin-bottom:7px}
+  .note{border-left:2px solid var(--accent);padding:2px 0 2px 16px;color:var(--muted);
+        font-size:14.5px;margin:18px 0;max-width:64ch}
+  footer{padding:36px 0 64px;color:var(--muted);font-size:13.5px}
+  footer a{color:var(--accent)}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">n8n · Twilio · OpenAI · Supabase · Cal.com</p>
+  <h1>Lead SMS Booking Engine</h1>
+  <p class="lede">A multi-tenant n8n workflow that captures inbound leads from four
+  channels, qualifies them over multi-turn SMS with GPT-4o-mini, books into Cal.com,
+  logs to Google Sheets, and chases the leads that go quiet.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/sw7rvy/lead-sms-engine">View on GitHub</a>
+    <a class="btn" href="https://github.com/sw7rvy/lead-sms-engine/blob/main/multi-channel-lead-sms-booking-engine.json">Workflow JSON</a>
+  </div>
+  <div class="stats">
+    <div class="stat"><b>37</b><span>workflow nodes</span></div>
+    <div class="stat"><b>4</b><span>intake channels</span></div>
+    <div class="stat"><b>3</b><span>nudges before cold</span></div>
+    <div class="stat"><b>2.38.5</b><span>n8n verified</span></div>
+  </div>
+</header>
+
+<section>
+  <h2>The problem</h2>
+  <p>A missed call at a plumbing company is a lost job. The lead calls the next
+  number on the list within minutes. Most small businesses answer hours later, or
+  never — and a booking form on a website catches only the people patient enough
+  to fill one in.</p>
+  <p>This closes that window. Every inbound signal — an unanswered call, a text, a
+  form, a lead-notification email — turns into an SMS conversation within seconds,
+  and that conversation runs until it produces a calendar booking or a clear no.</p>
+</section>
+
+<section>
+  <h2>How it works</h2>
+<pre><code>Missed call ──┐
+Inbound SMS ──┤
+Web form ─────┼──► Normalize ──► Resolve tenant ──► Load history ──► GPT-4o-mini
+Lead email ───┘                        │                                  │
+                                       └─ unknown ─► error_log      Twilio reply
+                                                                          │
+                     ┌──── booking ready ────┐                   Persist the turn
+                     │                       │                            │
+               Cal.com booking           (keep asking)              lead_threads
+                     │                       │                            │
+                     └────► Google Sheets ◄──┘        30-min sweep ──► re-engage</code></pre>
+  <p>All four channels converge on one normalizer, so there is a single
+  conversation engine rather than four parallel implementations. Tenant identity
+  comes from the Twilio number the lead contacted, which is what makes one workflow
+  serve many client businesses.</p>
+</section>
+
+<section>
+  <h2>Booking gate</h2>
+  <p>The model proposing a time is not enough to book. A booking fires only when
+  there is <em>both</em> a confirmed start time <em>and</em> a collected email
+  address — Cal.com rejects bookings without one. A confirmed intent missing
+  either is downgraded and the bot keeps asking.</p>
+  <p>A failed booking still lands in the sheet as <code>Booking Failed</code> and
+  the thread stays active, rather than the lead silently disappearing.</p>
+</section>
+
+<section>
+  <h2>Going cold</h2>
+  <p>A sweep runs every 30 minutes and nudges leads who stopped replying.</p>
+  <table>
+    <tr><th>Event</th><th>Status</th><th>Next nudge</th></tr>
+    <tr><td>Lead replies</td><td>nurturing</td><td>+2h — ladder resets</td></tr>
+    <tr><td>Nudge 1 sent</td><td>nurturing</td><td>+24h</td></tr>
+    <tr><td>Nudge 2 sent</td><td>nurturing</td><td>+72h</td></tr>
+    <tr><td>Nudge 3 sent</td><td>dead</td><td>none</td></tr>
+    <tr><td>Booking created</td><td>booked</td><td>none</td></tr>
+  </table>
+  <p>A reply at any point resets the ladder, so a slow responder gets the whole
+  sequence again instead of falling off after one late answer.</p>
+  <div class="note">Quiet hours are enforced in the <strong>tenant's</strong>
+  timezone, not the server's — 08:00–21:00 by default, per TCPA. A sweep that
+  ignores this texts people at 3am.</div>
+</section>
+
+<section>
+  <h2>Compliance</h2>
+  <p><code>STOP</code>, <code>STOPALL</code>, <code>UNSUBSCRIBE</code>,
+  <code>CANCEL</code>, <code>QUIT</code>, <code>END</code>, <code>REVOKE</code> and
+  <code>OPTOUT</code> mark the thread opted out and stop every future nudge.
+  <code>START</code> and <code>UNSTOP</code> restore it.</p>
+  <p>Opt-out is scoped to the lead <em>and</em> the tenant's number, so opting out
+  of one client never silences another. <code>yes</code> is deliberately not
+  filtered — it is the single most common way a lead confirms an appointment.</p>
+</section>
+
+<section>
+  <h2>Built to be regenerated</h2>
+  <p>The workflow JSON is generated, not hand-edited. A build script is the source
+  of truth, and a test suite runs the real node code against real payloads.</p>
+<pre><code>node tools/verify-all.js     # rebuild, then run every check</code></pre>
+  <p>That suite caught three bugs that static review missed — including
+  <code>$json</code> used in three all-items Code nodes, which n8n only defines in
+  per-item mode. One of them was the error handler itself, so failures would have
+  vanished instead of being logged.</p>
+</section>
+
+<footer>
+  <p>Open source on <a href="https://github.com/sw7rvy/lead-sms-engine">GitHub</a>.
+  Built with <a href="https://n8n.io">n8n</a>.</p>
+</footer>
+
+</div>
+</body>
+</html>
