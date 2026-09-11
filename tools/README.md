@@ -11,7 +11,8 @@ node tools/verify-all.js          # rebuild the workflow, then run every check
 node tools/verify-all.js --check  # run checks against the current JSON, no rebuild
 ```
 
-Exit code 0 means everything passed.
+Exit code 0 means everything passed. Every script exits non-zero on a finding,
+so any of them can gate CI on its own.
 
 ## What each script does
 
@@ -24,20 +25,12 @@ Exit code 0 means everything passed.
 | `test-normalize.js <wf>` | Runs `Normalize Lead Payload` against all channel payloads (SMS, media SMS, missed call, 0s call, web form, IMAP). |
 | `test-filter.js <wf>` | Opt-out keyword filter — STOP/CANCEL blocked, `yes` allowed through. |
 | `test-followup.js <wf>` | Cold-lead gate, quiet hours, cadence ladder, STOP/START, persist expression. |
+| `test-calcom-payload.js <wf>` | Outbound API contracts: Cal.com booking body, Twilio send params, OpenAI request. Catches shape errors without live keys. |
+| `test-intake-auth.js <wf>` | The web-form secret gate — every abuse shape blocked, legitimate traffic through, other channels unaffected. |
+| `test-twilio-signature.js <wf>` | `X-Twilio-Signature` validation. Checks the HMAC-SHA1 primitives against RFC 2202 and `node:crypto` before asserting behaviour. |
+| `test-send-budget.js <wf>` | Outbound caps per tenant and per lead, boundary conditions, and that the check sits upstream of the OpenAI node. |
 | `verify-import.js <src> <exported>` | Diffs a round-trip through a real n8n instance. See below. |
 | `dryrun.js <wf> <cfg.json> [out.json]` | Walks a lead through the real node code end to end, stubbing OpenAI/Twilio/Cal.com and emitting the exact Supabase calls n8n would make. The route is derived from `wf.connections`, so it cannot drift from the workflow. Omit `twilio_auth_token` from the config to watch the signature gate reject the lead. |
-
-## Known false positive
-
-`validate.js` always prints:
-
-```
-UNEXPECTED SECOND OUTPUT: Loop Over Cold Leads
-```
-
-`splitInBatches` legitimately has two outputs (done / loop) and the checker does
-not model that node type. `verify-all.js` tolerates it. Everything else it prints
-is real.
 
 ## Round-trip check against a live n8n
 
