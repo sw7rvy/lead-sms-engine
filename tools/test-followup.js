@@ -116,9 +116,14 @@ for (const [name, ai, bk, wantStatus, wantCount] of L) {
 
 /* ---------- 4. opt-out / opt-in ---------- */
 console.log('--- STOP / START handling ---');
-const oo = (body) => new Function('$input', code('Handle Non-Actionable SMS'))({
-  first: () => ({ json: { body: { Body: body, From: '+15551234567', To: '+15559998888' } } }),
-});
+// The handler now reads the normalizer's classification rather than the raw
+// webhook, because the branch moved behind signature verification. Drive it
+// through the real normalizer so the coupling is exercised, not mocked.
+const normalizeSms = (body) => new Function('$input', '$execution', code('Normalize Lead Payload'))(
+  { all: () => [{ json: { body: { MessageSid: 'SM1', From: '+15551234567', To: '+15559998888', Body: body, NumMedia: '0' } } }] },
+  { id: 'e1' })[0].json;
+const oo = (body) => new Function('$', code('Handle Non-Actionable SMS'))(
+  () => ({ first: () => ({ json: normalizeSms(body) }) }));
 for (const [b, want] of [['STOP', 'opted_out'], ['cancel.', 'opted_out'], ['Unsubscribe!', 'opted_out'],
   ['START', 'nurturing'], ['unstop', 'nurturing'], ['HELP', null], ['', null], ['yes', null]]) {
   const r = oo(b);

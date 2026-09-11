@@ -203,6 +203,25 @@ for (const item of $input.all()) {
   // Secret presented by web-form intake. Verified against the tenant's
   // webhook_secret after the config fetch - the tenant is not known yet here.
   norm.presented_secret = (b.secret || b.token || b.webhook_secret || null);
+
+  // Classify inbound SMS here so the actionable-vs-opt-out branch can sit behind
+  // signature verification. Branching off the raw webhook let an unauthenticated
+  // caller forge STOP (killing a live thread) or START (re-subscribing a number
+  // that genuinely opted out).
+  norm.sms_keyword = null;
+  norm.is_actionable = true;
+  if (norm.channel_source === 'sms') {
+    const raw = String(b.Body || '');
+    norm.sms_keyword = raw.trim().toLowerCase().replace(/[^a-z]/g, '');
+    const OPT_OUT = ['stop', 'stopall', 'unsubscribe', 'cancel', 'quit', 'end', 'revoke', 'optout'];
+    const OPT_IN = ['start', 'unstop'];
+    const HELP = ['help', 'info'];
+    const hasContent = raw.trim().length > 0 || Number(b.NumMedia || 0) > 0;
+    norm.is_actionable = hasContent
+      && !OPT_OUT.includes(norm.sms_keyword)
+      && !OPT_IN.includes(norm.sms_keyword)
+      && !HELP.includes(norm.sms_keyword);
+  }
   norm.received_at = new Date().toISOString();
   norm.n8n_execution_id = $execution.id;
   // Set by MODULE 6 only; 0 for every genuine inbound lead.
@@ -580,31 +599,20 @@ const CODE_NON_ACTIONABLE_SMS = `
 // Compliance: a dropped inbound SMS may still be an opt-out or an opt-in.
 // Everything else (empty body, HELP, INFO) needs no state change.
 // $json is only defined in runOnceForEachItem mode; this node runs over all items.
-const src = ($input.first() || { json: {} }).json || {};
-const b = src.body || src;
-const kw = String(b.Body || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+const lead = $('Normalize Lead Payload').first().json;
+const kw = String(lead.sms_keyword || '');
 
 const OPT_OUT = ['stop', 'stopall', 'unsubscribe', 'cancel', 'quit', 'end', 'revoke', 'optout'];
 const OPT_IN = ['start', 'unstop'];
 
 if (!OPT_OUT.includes(kw) && !OPT_IN.includes(kw)) return [];
 
-function toE164(v) {
-  if (!v) return null;
-  const raw = String(v).trim();
-  const digits = raw.replace(/[^0-9]/g, '');
-  if (!digits) return null;
-  if (raw.charAt(0) === '+') return '+' + digits;
-  if (digits.length === 10) return '+1' + digits;
-  return '+' + digits;
-}
-
 const optingOut = OPT_OUT.includes(kw);
 
 return [{
   json: {
-    lead_phone: toE164(b.From),
-    client_phone: toE164(b.To),
+    lead_phone: lead.lead_phone,
+    client_phone: lead.client_phone,
     keyword: kw,
     new_status: optingOut ? 'opted_out' : 'nurturing',
     // Re-opt-in restarts the ladder an hour out; opt-out kills it outright.
@@ -1128,13 +1136,7 @@ add({
       conditions: [
         {
           id: 'has-content',
-          leftValue: "={{ String($json.body.Body || '').trim().length > 0 || Number($json.body.NumMedia || 0) > 0 }}",
-          rightValue: '',
-          operator: { type: 'boolean', operation: 'true', singleValue: true },
-        },
-        {
-          id: 'not-opt-out-keyword',
-          leftValue: "={{ !['stop','stopall','unsubscribe','cancel','quit','end','revoke','optout','start','unstop','help','info'].includes(String($json.body.Body || '').trim().toLowerCase().replace(/[^a-z]/g, '')) }}",
+          leftValue: "={{ $('Normalize Lead Payload').first().json.is_actionable === true }}",
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
@@ -1761,8 +1763,8 @@ const connections = {
   'Email Lead Trigger (IMAP)': { main: [[to('IF Lead Notification Email')]] },
   'IF Lead Notification Email': { main: [[to('Normalize Lead Payload')], []] },
   'Web Form Webhook': { main: [[to('Normalize Lead Payload')]] },
-  'Twilio Inbound SMS Webhook': { main: [[to('IF Actionable Inbound SMS')]] },
-  'IF Actionable Inbound SMS': { main: [[to('Normalize Lead Payload')], [to('Handle Non-Actionable SMS')]] },
+  'Twilio Inbound SMS Webhook': { main: [[to('Normalize Lead Payload')]] },
+  'IF Actionable Inbound SMS': { main: [[to('Check Send Budget')], [to('Handle Non-Actionable SMS')]] },
   'Handle Non-Actionable SMS': { main: [[to('Apply SMS Opt-Out / Opt-In')]] },
   'Apply SMS Opt-Out / Opt-In': { main: [[], ERR] },
 
@@ -1777,7 +1779,7 @@ const connections = {
   'Fetch Client Config': { main: [[to('IF Client Config Found')], ERR] },
   'IF Client Config Found': { main: [[to('Verify Twilio Signature')], [to('Flag Unknown Client')]] },
   'Verify Twilio Signature': { main: [[to('IF Intake Authorised')], ERR] },
-  'IF Intake Authorised': { main: [[to('Check Send Budget')], [to('Flag Rejected Intake')]] },
+  'IF Intake Authorised': { main: [[to('IF Actionable Inbound SMS')], [to('Flag Rejected Intake')]] },
   'Check Send Budget': { main: [[to('IF Within Send Budget')], ERR] },
   'IF Within Send Budget': { main: [[to('Fetch Conversation History')], [to('Flag Rate Limited')]] },
   'Flag Rate Limited': { main: [[to('Log Error To Supabase')]] },
