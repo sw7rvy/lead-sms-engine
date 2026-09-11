@@ -1,0 +1,37 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Runs the generator, then every structural check and test suite.
+      # Fails on: JS syntax errors in Code nodes, $json used in all-items mode,
+      # unreachable nodes, missing error branches, sticky notes holding literal
+      # \n, and the three behavioural suites.
+      - name: verify
+        run: node tools/verify-all.js
+
+      # The JSON is generated from tools/build.js. If a commit edits the
+      # artifact by hand, the rebuild above overwrites it and this diff is
+      # non-empty -- which is the drift we want CI to catch.
+      - name: artifact matches generator
+        run: |
+          if ! git diff --quiet -- multi-channel-lead-sms-booking-engine.json; then
+            echo "::error::multi-channel-lead-sms-booking-engine.json does not match tools/build.js output."
+            echo "The JSON is generated. Edit tools/build.js and run: node tools/verify-all.js"
+            git --no-pager diff --stat -- multi-channel-lead-sms-booking-engine.json
+            exit 1
+          fi
+          echo "artifact is in sync with the generator"

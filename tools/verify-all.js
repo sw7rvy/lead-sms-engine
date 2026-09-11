@@ -46,10 +46,7 @@ if (!checkOnly) {
 
 if (!fs.existsSync(WF)) { console.error('missing ' + WF); process.exit(1); }
 
-// validate.js exits non-zero only on real problems, but always prints the
-// "UNEXPECTED SECOND OUTPUT: Loop Over Cold Leads" line - splitInBatches
-// legitimately has two outputs and the checker does not model that.
-ok = run('structure', 'validate.js', [WF], { tolerateExit: true }) && ok;
+ok = run('structure', 'validate.js', [WF]) && ok;
 ok = run('$json misuse audit', 'audit-json.js', [WF]) && ok;
 ok = run('sticky notes', 'check-notes.js', [WF]) && ok;
 ok = run('channel normalization', 'test-normalize.js', [WF]) && ok;
