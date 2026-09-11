@@ -161,3 +161,24 @@ comment on column public.client_configs.webhook_secret is
 update public.client_configs
    set webhook_secret = encode(gen_random_bytes(24), 'hex')
  where webhook_secret is null;
+
+-- ============================================================
+-- Twilio webhook signature validation
+-- The voice and SMS webhooks have no transport auth and accept
+-- a forged From/To. X-Twilio-Signature closes that; it needs the
+-- tenant's auth token. Same sensitivity as calcom_api_key.
+-- ============================================================
+
+alter table public.client_configs
+  add column if not exists twilio_auth_token text;
+
+comment on column public.client_configs.twilio_auth_token is
+  'Twilio Auth Token for X-Twilio-Signature validation. NULL with verification on = fail closed.';
+
+-- Explicit opt-out, so a missing token fails closed rather than
+-- silently accepting forged webhooks.
+alter table public.client_configs
+  add column if not exists twilio_verify_signatures boolean not null default true;
+
+comment on column public.client_configs.twilio_verify_signatures is
+  'When true (default) Twilio webhooks must carry a valid X-Twilio-Signature. Set false only for local testing.';

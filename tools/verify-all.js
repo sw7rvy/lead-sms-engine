@@ -54,6 +54,7 @@ ok = run('opt-out filter', 'test-filter.js', [WF]) && ok;
 ok = run('follow-up ladder', 'test-followup.js', [WF]) && ok;
 ok = run('API contracts', 'test-calcom-payload.js', [WF]) && ok;
 ok = run('intake authorisation', 'test-intake-auth.js', [WF]) && ok;
+ok = run('twilio signature', 'test-twilio-signature.js', [WF]) && ok;
 
 console.log('\n' + '='.repeat(60));
 console.log(ok ? 'ALL CHECKS PASSED' : 'FAILURES - see above');

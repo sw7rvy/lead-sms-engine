@@ -49,11 +49,19 @@ check('web form, correct secret',
 check('web form, secret sent as token',
   allowed(normalize({ body: { client_id: 'test_client_001', phone: '+15551110000', token: SECRET } }), cfg), true);
 
-console.log('--- other channels are not gated by this rule ---');
-check('inbound SMS',
-  allowed(normalize({ body: { MessageSid: 'SM1', From: '+15558675309', To: '+15005550006', Body: 'hi' } }), cfg), true);
-check('missed call',
-  allowed(normalize({ body: { CallSid: 'CA1', CallStatus: 'no-answer', From: '+15558675309', To: '+15005550006', CallDuration: '0' } }), cfg), true);
+console.log('--- Twilio channels gate on the verified signature ---');
+const signed = Object.assign({}, cfg, { twilio_signature_valid: true });
+const unsigned = Object.assign({}, cfg, { twilio_signature_valid: false });
+check('inbound SMS with a valid signature',
+  allowed(normalize({ body: { MessageSid: 'SM1', From: '+15558675309', To: '+15005550006', Body: 'hi' } }), signed), true);
+check('inbound SMS with a forged signature',
+  allowed(normalize({ body: { MessageSid: 'SM1', From: '+15558675309', To: '+15005550006', Body: 'hi' } }), unsigned), false);
+check('missed call with a valid signature',
+  allowed(normalize({ body: { CallSid: 'CA1', CallStatus: 'no-answer', From: '+15558675309', To: '+15005550006', CallDuration: '0' } }), signed), true);
+check('missed call with no signature verdict at all (fail closed)',
+  allowed(normalize({ body: { CallSid: 'CA1', CallStatus: 'no-answer', From: '+15558675309', To: '+15005550006', CallDuration: '0' } }), cfg), false);
+
+console.log('--- channels Twilio does not sign are unaffected ---');
 check('IMAP lead email',
   allowed(normalize({ from: { text: 'a <a@b.com>' }, subject: 'New Lead', textPlain: 'call +15557776666', to: { value: [{ address: 'leads@biz.com' }] } }), cfg), true);
 check('cold-lead follow-up sweep',

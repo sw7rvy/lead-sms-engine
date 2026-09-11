@@ -546,6 +546,21 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates Twilio's X-Twilio-Signature on the voice and SMS webhooks.\n//\n// Twilio signs: the exact URL it called, then every POST parameter appended as\n// key+value in ascending key order, HMAC-SHA1 with the account Auth Token,\n// base64. Without this check both endpoints accept a forged From/To and will\n// send SMS from the tenant's number to any target the caller picks.\n//\n// HMAC-SHA1 is implemented here rather than via require('crypto'), which the\n// Code node sandbox blocks unless NODE_FUNCTION_ALLOW_BUILTIN is set.\n\nfunction utf8Bytes(str) {\n  const out = [];\n  for (let i = 0; i < str.length; i++) {\n    const c = str.charCodeAt(i);\n    if (c < 0x80) out.push(c);\n    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));\n    else if (c >= 0xd800 && c < 0xdc00) {\n      const c2 = str.charCodeAt(++i);\n      const cp = 0x10000 + ((c - 0xd800) << 10) + (c2 - 0xdc00);\n      out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));\n    } else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));\n  }\n  return out;\n}\n\nfunction sha1(bytes) {\n  const msg = bytes.slice();\n  const bitLen = bytes.length * 8;\n  msg.push(0x80);\n  while (msg.length % 64 !== 56) msg.push(0);\n  msg.push(0, 0, 0, 0,\n    (bitLen >>> 24) & 0xff, (bitLen >>> 16) & 0xff, (bitLen >>> 8) & 0xff, bitLen & 0xff);\n\n  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;\n  const w = new Array(80);\n\n  for (let off = 0; off < msg.length; off += 64) {\n    for (let i = 0; i < 16; i++) {\n      w[i] = (msg[off + i * 4] << 24) | (msg[off + i * 4 + 1] << 16) |\n             (msg[off + i * 4 + 2] << 8) | msg[off + i * 4 + 3];\n    }\n    for (let i = 16; i < 80; i++) {\n      const n = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];\n      w[i] = (n << 1) | (n >>> 31);\n    }\n    let a = h0, b = h1, c = h2, d = h3, e = h4;\n    for (let i = 0; i < 80; i++) {\n      let f, k;\n      if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }\n      else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }\n      else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }\n      else { f = b ^ c ^ d; k = 0xca62c1d6; }\n      const t = (((a << 5) | (a >>> 27)) + f + e + k + w[i]) | 0;\n      e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = t;\n    }\n    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0;\n  }\n  const out = [];\n  for (const h of [h0, h1, h2, h3, h4]) out.push((h >>> 24) & 0xff, (h >>> 16) & 0xff, (h >>> 8) & 0xff, h & 0xff);\n  return out;\n}\n\nfunction hmacSha1(keyBytes, msgBytes) {\n  let k = keyBytes.slice();\n  if (k.length > 64) k = sha1(k);\n  while (k.length < 64) k.push(0);\n  const inner = [], outer = [];\n  for (let i = 0; i < 64; i++) { inner.push(k[i] ^ 0x36); outer.push(k[i] ^ 0x5c); }\n  return sha1(outer.concat(sha1(inner.concat(msgBytes))));\n}\n\nfunction base64(bytes) {\n  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n  let out = '';\n  for (let i = 0; i < bytes.length; i += 3) {\n    const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];\n    out += A[b0 >> 2];\n    out += A[((b0 & 3) << 4) | ((b1 === undefined ? 0 : b1) >> 4)];\n    out += b1 === undefined ? '=' : A[((b1 & 15) << 2) | ((b2 === undefined ? 0 : b2) >> 6)];\n    out += b2 === undefined ? '=' : A[b2 & 63];\n  }\n  return out;\n}\n\n// Constant-time compare - a length-dependent early return leaks nothing useful\n// here, but a byte-wise early return would.\nfunction safeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\n// Twilio's guidance is to use their SDK rather than hand-rolled validation.\n// The Code sandbox blocks require() unless NODE_FUNCTION_ALLOW_BUILTIN=crypto\n// is set on the n8n host, so prefer the real thing and fall back to the\n// implementation above when it is unavailable.\nfunction nodeCryptoHmac(authToken, data) {\n  try {\n    // eslint-disable-next-line\n    const c = typeof require === 'function' ? require('crypto') : null;\n    if (c && typeof c.createHmac === 'function') {\n      return c.createHmac('sha1', authToken).update(data, 'utf8').digest('base64');\n    }\n  } catch (e) { /* sandbox blocked it; fall through */ }\n  return null;\n}\n\nfunction twilioSignature(authToken, url, params) {\n  let data = url;\n  for (const key of Object.keys(params).sort()) {\n    data += key + (params[key] === null || params[key] === undefined ? '' : String(params[key]));\n  }\n  return nodeCryptoHmac(authToken, data) || base64(hmacSha1(utf8Bytes(authToken), utf8Bytes(data)));\n}\n\nconst cfg = $input.first().json;\nconst lead = $('Normalize Lead Payload').first().json;\nconst TWILIO_CHANNELS = ['sms', 'missed_call'];\n\nconst result = {\n  twilio_signature_checked: false,\n  twilio_signature_valid: null,\n  twilio_signature_reason: 'not a Twilio channel',\n};\n\nif (TWILIO_CHANNELS.includes(lead.channel_source)) {\n  // Whichever Twilio webhook fired carries the headers and the raw form body.\n  let req = null;\n  for (const name of ['Twilio Inbound SMS Webhook', 'Twilio Voice Status Webhook']) {\n    try {\n      const j = $(name).first().json;\n      if (j && j.body && Object.keys(j.body).length) { req = j; break; }\n    } catch (e) { /* that webhook did not run in this execution */ }\n  }\n\n  if (cfg.twilio_verify_signatures === false) {\n    result.twilio_signature_valid = true;\n    result.twilio_signature_reason = 'verification disabled for this tenant';\n  } else if (!cfg.twilio_auth_token) {\n    result.twilio_signature_valid = false;\n    result.twilio_signature_reason = 'no twilio_auth_token configured (fail closed)';\n  } else if (!req) {\n    result.twilio_signature_valid = false;\n    result.twilio_signature_reason = 'could not read the originating webhook request';\n  } else {\n    const headers = req.headers || {};\n    const provided = headers['x-twilio-signature'] || headers['X-Twilio-Signature'] || null;\n    if (!provided) {\n      result.twilio_signature_valid = false;\n      result.twilio_signature_reason = 'no X-Twilio-Signature header present';\n    } else {\n      // Twilio signs the URL it called. Behind a proxy the scheme arrives in\n      // x-forwarded-proto; host must be the externally visible one.\n      const proto = headers['x-forwarded-proto'] || 'https';\n      const host = headers['x-forwarded-host'] || headers.host || '';\n      // Derived with string ops rather than a regex: this source passes through\n      // a template literal, and the backslashes in an escaped regex do not survive.\n      let path;\n      if (req.webhookUrl) {\n        const u = String(req.webhookUrl);\n        const sep = u.indexOf('://');\n        const rest = sep >= 0 ? u.slice(sep + 3) : u;\n        const slash = rest.indexOf('/');\n        path = slash >= 0 ? rest.slice(slash) : '/';\n      } else {\n        path = lead.channel_source === 'sms' ? '/webhook/twilio-inbound-sms' : '/webhook/twilio-voice-status';\n      }\n      const url = proto + '://' + host + path;\n      const expected = twilioSignature(cfg.twilio_auth_token, url, req.body || {});\n      result.twilio_signature_checked = true;\n      result.twilio_signature_valid = safeEqual(expected, String(provided));\n      result.twilio_signature_reason = result.twilio_signature_valid\n        ? 'signature verified'\n        : 'signature mismatch for reconstructed url ' + url;\n    }\n  }\n}\n\n// Pass the tenant config straight through; downstream reads it unchanged.\nreturn [{ json: Object.assign({}, cfg, result) }];"
+      },
+      "id": "verify-twilio-signature",
+      "name": "Verify Twilio Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -820,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
         "conditions": {
           "options": {
             "caseSensitive": true,
@@ -556,7 +571,7 @@
           "conditions": [
             {
               "id": "intake-authorised",
-              "leftValue": "={{ $('Normalize Lead Payload').first().json.channel_source !== 'web_form' || (!!$json.webhook_secret && $('Normalize Lead Payload').first().json.presented_secret === $json.webhook_secret) }}",
+              "leftValue": "={{ (() => { const ch = $('Normalize Lead Payload').first().json.channel_source; if (ch === 'web_form') { return !!$json.webhook_secret && $('Normalize Lead Payload').first().json.presented_secret === $json.webhook_secret; } if (ch === 'sms' || ch === 'missed_call') { return $json.twilio_signature_valid === true; } return true; })() }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -1598,7 +1613,7 @@
       "main": [
         [
           {
-            "node": "IF Intake Authorised",
+            "node": "Verify Twilio Signature",
             "type": "main",
             "index": 0
           }
@@ -1606,6 +1621,24 @@
         [
           {
             "node": "Flag Unknown Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Twilio Signature": {
+      "main": [
+        [
+          {
+            "node": "IF Intake Authorised",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
             "type": "main",
             "index": 0
           }
