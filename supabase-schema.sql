@@ -142,3 +142,22 @@ alter table public.client_configs        enable row level security;
 alter table public.conversation_history  enable row level security;
 alter table public.lead_threads          enable row level security;
 alter table public.error_log             enable row level security;
+
+-- ============================================================
+-- Public intake authorisation
+-- /webhook/web-lead has no transport auth. Without a per-tenant
+-- secret, any caller can supply a client_id and an arbitrary
+-- phone number and cause an SMS from that tenant's Twilio number
+-- to a target of their choosing -- cost, spam and TCPA exposure
+-- landing on the client. The gate fails closed.
+-- ============================================================
+
+alter table public.client_configs
+  add column if not exists webhook_secret text;
+
+comment on column public.client_configs.webhook_secret is
+  'Shared secret the web-form intake must present. NULL = web-form intake disabled for this tenant (fail closed).';
+
+update public.client_configs
+   set webhook_secret = encode(gen_random_bytes(24), 'hex')
+ where webhook_secret is null;

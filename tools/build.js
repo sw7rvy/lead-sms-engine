@@ -200,6 +200,9 @@ for (const item of $input.all()) {
     };
   }
 
+  // Secret presented by web-form intake. Verified against the tenant's
+  // webhook_secret after the config fetch - the tenant is not known yet here.
+  norm.presented_secret = (b.secret || b.token || b.webhook_secret || null);
   norm.received_at = new Date().toISOString();
   norm.n8n_execution_id = $execution.id;
   // Set by MODULE 6 only; 0 for every genuine inbound lead.
@@ -612,6 +615,30 @@ return [{
 }];
 `.trim();
 
+const CODE_REJECTED_INTAKE = `
+// Public web-form intake presented no secret, or the wrong one. Nothing is sent.
+// Logged loudly: repeated hits on one tenant are someone probing the endpoint.
+const lead = $('Normalize Lead Payload').first().json;
+return [{
+  json: {
+    workflow_id: $workflow.id,
+    workflow_name: $workflow.name,
+    execution_id: $execution.id,
+    failed_node: 'IF Intake Authorised',
+    error_message: 'Rejected web-form intake for tenant "' + lead.client_id_or_number +
+      '": ' + (lead.presented_secret ? 'wrong secret presented' : 'no secret presented') +
+      '. Target number was ' + lead.lead_phone + '.',
+    error_stack: null,
+    http_status: 401,
+    payload: JSON.stringify({ channel: lead.channel_source, lead_phone: lead.lead_phone, tenant: lead.client_id_or_number }).slice(0, 2000),
+    client_id: null,
+    lead_phone: lead.lead_phone,
+    severity: 'warning',
+    created_at: new Date().toISOString(),
+  },
+}];
+`.trim();
+
 const CODE_ERROR = `
 // Shared error funnel: node-level error outputs + the global Error Trigger.
 // $json is only defined in runOnceForEachItem mode; this node runs over all items.
@@ -968,6 +995,42 @@ add({
   type: 'n8n-nodes-base.code',
   typeVersion: 2,
   position: [-460, 400],
+});
+
+add({
+  parameters: {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'intake-authorised',
+          // Fails closed: a web-form lead is only allowed when the tenant has a
+          // secret configured AND the caller presented exactly that secret.
+          // Every other channel passes through untouched.
+          leftValue: "={{ $('Normalize Lead Payload').first().json.channel_source !== 'web_form' || (!!$json.webhook_secret && $('Normalize Lead Payload').first().json.presented_secret === $json.webhook_secret) }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    looseTypeValidation: true,
+    options: {},
+  },
+  id: 'if-intake-authorised',
+  name: 'IF Intake Authorised',
+  type: 'n8n-nodes-base.if',
+  typeVersion: 2.2,
+  position: [-580, 300],
+});
+
+add({
+  parameters: { mode: 'runOnceForAllItems', jsCode: CODE_REJECTED_INTAKE },
+  id: 'flag-rejected-intake',
+  name: 'Flag Rejected Intake',
+  type: 'n8n-nodes-base.code',
+  typeVersion: 2,
+  position: [-340, 520],
 });
 
 /* --- MODULE 4 ------------------------------------------------------ */
@@ -1428,7 +1491,9 @@ const connections = {
   // Module 3
   'Normalize Lead Payload': { main: [[to('Fetch Client Config')], ERR] },
   'Fetch Client Config': { main: [[to('IF Client Config Found')], ERR] },
-  'IF Client Config Found': { main: [[to('Fetch Conversation History')], [to('Flag Unknown Client')]] },
+  'IF Client Config Found': { main: [[to('IF Intake Authorised')], [to('Flag Unknown Client')]] },
+  'IF Intake Authorised': { main: [[to('Fetch Conversation History')], [to('Flag Rejected Intake')]] },
+  'Flag Rejected Intake': { main: [[to('Log Error To Supabase')]] },
   'Flag Unknown Client': { main: [[to('Log Error To Supabase')]] },
 
   // Module 4

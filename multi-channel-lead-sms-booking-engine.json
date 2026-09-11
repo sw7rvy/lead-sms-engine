@@ -439,7 +439,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// MODULE 3.1 :: Unify Voice / Email / Web-Form payloads into one lead schema.\nfunction toE164(v) {\n  if (!v) return null;\n  const raw = String(v).trim();\n  const digits = raw.replace(/[^0-9]/g, '');\n  if (!digits) return null;\n  if (raw.charAt(0) === '+') return '+' + digits;\n  if (digits.length === 10) return '+1' + digits;\n  return '+' + digits;\n}\n\nfunction firstPhoneIn(text) {\n  if (!text) return null;\n  const m = String(text).match(/(\\+?\\d[\\d\\-\\.\\(\\)\\s]{8,}\\d)/);\n  return m ? toE164(m[1]) : null;\n}\n\nfunction clean(s, max) {\n  if (s === null || s === undefined) return '';\n  return String(s).replace(/\\s+/g, ' ').trim().slice(0, max || 1500);\n}\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const b = j.body || j;\n  let norm = null;\n\n  // ---- Entry D: Twilio inbound SMS (lead replies / multi-turn) -------\n  if (b.MessageSid || b.SmsMessageSid || (b.Body !== undefined && b.From && b.To && !b.CallSid)) {\n    const numMedia = Number(b.NumMedia || 0);\n    const bodyText = clean(b.Body, 1500);\n    norm = {\n      channel_source: 'sms',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: null,\n      lead_email: null,\n      raw_message: (bodyText || '(no text)') + (numMedia > 0 ? ' [lead attached ' + numMedia + ' media file(s)]' : ''),\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.MessageSid || b.SmsMessageSid || null,\n    };\n  }\n\n  // ---- Entry A: Twilio voice status callback ------------------------\n  else if (b.CallSid || b.CallStatus) {\n    const duration = Number(b.CallDuration || b.Duration || 0);\n    norm = {\n      channel_source: 'missed_call',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: clean(b.CallerName || b.FromCity ? (b.CallerName || 'Caller from ' + b.FromCity) : 'Unknown Caller', 120),\n      lead_email: null,\n      raw_message: 'Inbound call not answered. status=' + (b.CallStatus || 'unknown') + ' duration=' + duration + 's',\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.CallSid || null,\n    };\n  }\n\n  // ---- Entry B: IMAP lead-notification email ------------------------\n  else if (b.from !== undefined || b.subject !== undefined || b.textPlain !== undefined) {\n    const fromRaw = typeof b.from === 'object' && b.from !== null\n      ? (b.from.text || (Array.isArray(b.from.value) && b.from.value[0] ? b.from.value[0].address : ''))\n      : (b.from || '');\n    const bodyText = b.textPlain || b.text || b.textHtml || '';\n    const nameMatch = String(fromRaw).match(/^\\s*\"?([^\"<]+?)\"?\\s*</);\n    norm = {\n      channel_source: 'email',\n      lead_phone: firstPhoneIn(bodyText) || firstPhoneIn(b.subject),\n      client_phone: null,\n      lead_name: clean(nameMatch ? nameMatch[1] : (b.leadName || String(fromRaw).split('@')[0]), 120) || 'Email Lead',\n      lead_email: (String(fromRaw).match(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/) || [null])[0],\n      raw_message: clean(clean(b.subject, 200) + ' :: ' + bodyText, 1500),\n      client_id_or_number: b.client_id || (Array.isArray(b.to && b.to.value) && b.to.value[0] ? b.to.value[0].address : null),\n      client_id: b.client_id || null,\n      external_id: b.messageId || b.uid || null,\n    };\n  }\n\n  // ---- Entry C: Website form / widget --------------------------------\n  else {\n    norm = {\n      channel_source: clean(b.source || 'web_form', 40),\n      lead_phone: toE164(b.phone || b.phone_number || b.tel),\n      client_phone: toE164(b.client_phone || b.twilio_phone_number),\n      lead_name: clean(b.name || b.full_name || ((b.first_name || '') + ' ' + (b.last_name || '')), 120) || 'Web Lead',\n      lead_email: b.email || null,\n      raw_message: clean(b.message || b.notes || b.comments || b.service || 'New website enquiry', 1500),\n      client_id_or_number: b.client_id || toE164(b.client_phone || b.twilio_phone_number),\n      client_id: b.client_id || null,\n      external_id: b.submission_id || null,\n    };\n  }\n\n  norm.received_at = new Date().toISOString();\n  norm.n8n_execution_id = $execution.id;\n  // Set by MODULE 6 only; 0 for every genuine inbound lead.\n  norm.followup_step = Number(b.followup_step || 0);\n\n  if (!norm.lead_phone) {\n    // No reachable SMS number -> nothing for Module 4 to do. Fail loudly.\n    throw new Error('Lead from channel \"' + norm.channel_source + '\" has no resolvable phone number. Payload: ' + JSON.stringify(b).slice(0, 400));\n  }\n  if (!norm.client_id_or_number) {\n    throw new Error('Cannot resolve tenant for lead ' + norm.lead_phone + ' (channel ' + norm.channel_source + ').');\n  }\n\n  out.push({ json: norm });\n}\n\nreturn out;"
+        "jsCode": "// MODULE 3.1 :: Unify Voice / Email / Web-Form payloads into one lead schema.\nfunction toE164(v) {\n  if (!v) return null;\n  const raw = String(v).trim();\n  const digits = raw.replace(/[^0-9]/g, '');\n  if (!digits) return null;\n  if (raw.charAt(0) === '+') return '+' + digits;\n  if (digits.length === 10) return '+1' + digits;\n  return '+' + digits;\n}\n\nfunction firstPhoneIn(text) {\n  if (!text) return null;\n  const m = String(text).match(/(\\+?\\d[\\d\\-\\.\\(\\)\\s]{8,}\\d)/);\n  return m ? toE164(m[1]) : null;\n}\n\nfunction clean(s, max) {\n  if (s === null || s === undefined) return '';\n  return String(s).replace(/\\s+/g, ' ').trim().slice(0, max || 1500);\n}\n\nconst out = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const b = j.body || j;\n  let norm = null;\n\n  // ---- Entry D: Twilio inbound SMS (lead replies / multi-turn) -------\n  if (b.MessageSid || b.SmsMessageSid || (b.Body !== undefined && b.From && b.To && !b.CallSid)) {\n    const numMedia = Number(b.NumMedia || 0);\n    const bodyText = clean(b.Body, 1500);\n    norm = {\n      channel_source: 'sms',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: null,\n      lead_email: null,\n      raw_message: (bodyText || '(no text)') + (numMedia > 0 ? ' [lead attached ' + numMedia + ' media file(s)]' : ''),\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.MessageSid || b.SmsMessageSid || null,\n    };\n  }\n\n  // ---- Entry A: Twilio voice status callback ------------------------\n  else if (b.CallSid || b.CallStatus) {\n    const duration = Number(b.CallDuration || b.Duration || 0);\n    norm = {\n      channel_source: 'missed_call',\n      lead_phone: toE164(b.From),\n      client_phone: toE164(b.To),\n      lead_name: clean(b.CallerName || b.FromCity ? (b.CallerName || 'Caller from ' + b.FromCity) : 'Unknown Caller', 120),\n      lead_email: null,\n      raw_message: 'Inbound call not answered. status=' + (b.CallStatus || 'unknown') + ' duration=' + duration + 's',\n      client_id_or_number: toE164(b.To),\n      client_id: null,\n      external_id: b.CallSid || null,\n    };\n  }\n\n  // ---- Entry B: IMAP lead-notification email ------------------------\n  else if (b.from !== undefined || b.subject !== undefined || b.textPlain !== undefined) {\n    const fromRaw = typeof b.from === 'object' && b.from !== null\n      ? (b.from.text || (Array.isArray(b.from.value) && b.from.value[0] ? b.from.value[0].address : ''))\n      : (b.from || '');\n    const bodyText = b.textPlain || b.text || b.textHtml || '';\n    const nameMatch = String(fromRaw).match(/^\\s*\"?([^\"<]+?)\"?\\s*</);\n    norm = {\n      channel_source: 'email',\n      lead_phone: firstPhoneIn(bodyText) || firstPhoneIn(b.subject),\n      client_phone: null,\n      lead_name: clean(nameMatch ? nameMatch[1] : (b.leadName || String(fromRaw).split('@')[0]), 120) || 'Email Lead',\n      lead_email: (String(fromRaw).match(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/) || [null])[0],\n      raw_message: clean(clean(b.subject, 200) + ' :: ' + bodyText, 1500),\n      client_id_or_number: b.client_id || (Array.isArray(b.to && b.to.value) && b.to.value[0] ? b.to.value[0].address : null),\n      client_id: b.client_id || null,\n      external_id: b.messageId || b.uid || null,\n    };\n  }\n\n  // ---- Entry C: Website form / widget --------------------------------\n  else {\n    norm = {\n      channel_source: clean(b.source || 'web_form', 40),\n      lead_phone: toE164(b.phone || b.phone_number || b.tel),\n      client_phone: toE164(b.client_phone || b.twilio_phone_number),\n      lead_name: clean(b.name || b.full_name || ((b.first_name || '') + ' ' + (b.last_name || '')), 120) || 'Web Lead',\n      lead_email: b.email || null,\n      raw_message: clean(b.message || b.notes || b.comments || b.service || 'New website enquiry', 1500),\n      client_id_or_number: b.client_id || toE164(b.client_phone || b.twilio_phone_number),\n      client_id: b.client_id || null,\n      external_id: b.submission_id || null,\n    };\n  }\n\n  // Secret presented by web-form intake. Verified against the tenant's\n  // webhook_secret after the config fetch - the tenant is not known yet here.\n  norm.presented_secret = (b.secret || b.token || b.webhook_secret || null);\n  norm.received_at = new Date().toISOString();\n  norm.n8n_execution_id = $execution.id;\n  // Set by MODULE 6 only; 0 for every genuine inbound lead.\n  norm.followup_step = Number(b.followup_step || 0);\n\n  if (!norm.lead_phone) {\n    // No reachable SMS number -> nothing for Module 4 to do. Fail loudly.\n    throw new Error('Lead from channel \"' + norm.channel_source + '\" has no resolvable phone number. Payload: ' + JSON.stringify(b).slice(0, 400));\n  }\n  if (!norm.client_id_or_number) {\n    throw new Error('Cannot resolve tenant for lead ' + norm.lead_phone + ' (channel ' + norm.channel_source + ').');\n  }\n\n  out.push({ json: norm });\n}\n\nreturn out;"
       },
       "id": "normalize-lead",
       "name": "Normalize Lead Payload",
@@ -542,6 +542,55 @@
       "position": [
         -460,
         400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "intake-authorised",
+              "leftValue": "={{ $('Normalize Lead Payload').first().json.channel_source !== 'web_form' || (!!$json.webhook_secret && $('Normalize Lead Payload').first().json.presented_secret === $json.webhook_secret) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-intake-authorised",
+      "name": "IF Intake Authorised",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Public web-form intake presented no secret, or the wrong one. Nothing is sent.\n// Logged loudly: repeated hits on one tenant are someone probing the endpoint.\nconst lead = $('Normalize Lead Payload').first().json;\nreturn [{\n  json: {\n    workflow_id: $workflow.id,\n    workflow_name: $workflow.name,\n    execution_id: $execution.id,\n    failed_node: 'IF Intake Authorised',\n    error_message: 'Rejected web-form intake for tenant \"' + lead.client_id_or_number +\n      '\": ' + (lead.presented_secret ? 'wrong secret presented' : 'no secret presented') +\n      '. Target number was ' + lead.lead_phone + '.',\n    error_stack: null,\n    http_status: 401,\n    payload: JSON.stringify({ channel: lead.channel_source, lead_phone: lead.lead_phone, tenant: lead.client_id_or_number }).slice(0, 2000),\n    client_id: null,\n    lead_phone: lead.lead_phone,\n    severity: 'warning',\n    created_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "flag-rejected-intake",
+      "name": "Flag Rejected Intake",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -340,
+        520
       ]
     },
     {
@@ -1549,7 +1598,7 @@
       "main": [
         [
           {
-            "node": "Fetch Conversation History",
+            "node": "IF Intake Authorised",
             "type": "main",
             "index": 0
           }
@@ -1557,6 +1606,35 @@
         [
           {
             "node": "Flag Unknown Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Intake Authorised": {
+      "main": [
+        [
+          {
+            "node": "Fetch Conversation History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag Rejected Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Rejected Intake": {
+      "main": [
+        [
+          {
+            "node": "Log Error To Supabase",
             "type": "main",
             "index": 0
           }
