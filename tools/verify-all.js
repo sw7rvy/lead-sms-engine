@@ -52,6 +52,7 @@ ok = run('sticky notes', 'check-notes.js', [WF]) && ok;
 ok = run('channel normalization', 'test-normalize.js', [WF]) && ok;
 ok = run('opt-out filter', 'test-filter.js', [WF]) && ok;
 ok = run('follow-up ladder', 'test-followup.js', [WF]) && ok;
+ok = run('API contracts', 'test-calcom-payload.js', [WF]) && ok;
 
 console.log('\n' + '='.repeat(60));
 console.log(ok ? 'ALL CHECKS PASSED' : 'FAILURES - see above');

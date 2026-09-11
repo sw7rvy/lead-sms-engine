@@ -394,7 +394,9 @@ return [{
     booking_intent: bookingIntent,
     booking_start: bookingIntent === 'confirmed' ? start : null,
     duration_minutes: Number(ai.duration_minutes || 30),
-    notes: String(ai.notes || '').slice(0, 500),
+    // Cal.com rejects an empty string for responses.notes with a 400, so this
+    // must never be ''. A terse model answer is not a reason to fail a booking.
+    notes: (String(ai.notes || '').trim() || ('Lead via ' + lead.channel_source + '; no summary returned')).slice(0, 500),
     turn: meta.turn || 1,
     booking_link: meta.booking_link || null,
     tokens_used: (resp.usage && resp.usage.total_tokens) || 0,
