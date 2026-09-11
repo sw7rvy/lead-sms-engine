@@ -182,3 +182,33 @@ alter table public.client_configs
 
 comment on column public.client_configs.twilio_verify_signatures is
   'When true (default) Twilio webhooks must carry a valid X-Twilio-Signature. Set false only for local testing.';
+
+-- ============================================================
+-- Outbound send budget
+-- Abuse caps, not billing metering. Bounds the blast radius of
+-- anything that gets past the intake gates. Checked before the
+-- model call, so a capped request costs nothing.
+-- ============================================================
+
+alter table public.client_configs
+  add column if not exists max_sms_per_hour           int not null default 60,
+  add column if not exists max_sms_per_day            int not null default 500,
+  add column if not exists max_sms_per_lead_per_hour  int not null default 4,
+  add column if not exists max_sms_per_lead_per_day   int not null default 10;
+
+create or replace function public.check_send_budget(p_client_id text, p_lead_phone text)
+returns table (tenant_hour int, tenant_day int, lead_hour int, lead_day int)
+language sql stable as $$
+  select
+    count(*) filter (where created_at > now() - interval '1 hour')::int,
+    count(*)::int,
+    count(*) filter (where created_at > now() - interval '1 hour' and lead_phone = p_lead_phone)::int,
+    count(*) filter (where lead_phone = p_lead_phone)::int
+  from public.conversation_history
+  where client_id = p_client_id and role = 'assistant'
+    and created_at > now() - interval '1 day';
+$$;
+
+create index if not exists conv_outbound_budget_idx
+  on public.conversation_history (client_id, created_at)
+  where role = 'assistant';

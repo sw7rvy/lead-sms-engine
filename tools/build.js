@@ -799,6 +799,38 @@ if (TWILIO_CHANNELS.includes(lead.channel_source)) {
 return [{ json: Object.assign({}, cfg, result) }];
 `.trim();
 
+const CODE_RATE_LIMITED = `
+// Send budget exhausted. Nothing is sent and no model call is made - this runs
+// before the OpenAI node so a rate-limited request costs nothing.
+const lead = $('Normalize Lead Payload').first().json;
+const cfg = $('Verify Twilio Signature').first().json;
+const b = $input.first().json || {};
+
+const breached = [];
+if (b.tenant_hour >= cfg.max_sms_per_hour) breached.push('tenant ' + b.tenant_hour + '/' + cfg.max_sms_per_hour + ' per hour');
+if (b.tenant_day >= cfg.max_sms_per_day) breached.push('tenant ' + b.tenant_day + '/' + cfg.max_sms_per_day + ' per day');
+if (b.lead_hour >= cfg.max_sms_per_lead_per_hour) breached.push('lead ' + b.lead_hour + '/' + cfg.max_sms_per_lead_per_hour + ' per hour');
+if (b.lead_day >= cfg.max_sms_per_lead_per_day) breached.push('lead ' + b.lead_day + '/' + cfg.max_sms_per_lead_per_day + ' per day');
+
+return [{
+  json: {
+    workflow_id: $workflow.id,
+    workflow_name: $workflow.name,
+    execution_id: $execution.id,
+    failed_node: 'IF Within Send Budget',
+    error_message: 'Send budget exhausted for ' + cfg.client_id + ' -> ' + lead.lead_phone +
+      '. Breached: ' + (breached.join('; ') || 'unknown') + '. Channel ' + lead.channel_source + '.',
+    error_stack: null,
+    http_status: 429,
+    payload: JSON.stringify({ counts: b, channel: lead.channel_source, lead_phone: lead.lead_phone }).slice(0, 2000),
+    client_id: cfg.client_id,
+    lead_phone: lead.lead_phone,
+    severity: 'warning',
+    created_at: new Date().toISOString(),
+  },
+}];
+`.trim();
+
 const CODE_REJECTED_INTAKE = `
 // Public web-form intake presented no secret, or the wrong one. Nothing is sent.
 // Logged loudly: repeated hits on one tenant are someone probing the endpoint.
@@ -1225,6 +1257,64 @@ add({
   type: 'n8n-nodes-base.code',
   typeVersion: 2,
   position: [-340, 520],
+});
+
+add({
+  parameters: Object.assign({
+    method: 'POST',
+    url: SUPA + '/rest/v1/rpc/check_send_budget',
+    sendHeaders: true,
+    headerParameters: { parameters: [{ name: 'Content-Type', value: 'application/json' }] },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: "={{ JSON.stringify({ p_client_id: $json.client_id, p_lead_phone: $('Normalize Lead Payload').first().json.lead_phone }) }}",
+    options: { response: { response: { responseFormat: 'json' } }, timeout: 15000 },
+  }, supaAuth),
+  id: 'check-send-budget',
+  name: 'Check Send Budget',
+  type: 'n8n-nodes-base.httpRequest',
+  typeVersion: 4.2,
+  position: [-340, 60],
+  credentials: CRED.supabase,
+  alwaysOutputData: true,
+  ...RESILIENT,
+});
+
+add({
+  parameters: {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'within-budget',
+          // Strict <: the counts are messages already sent, so sending one more
+          // must still land under the cap. A failed budget read yields no counts,
+          // which reads as 0 and allows the send - the caps exist to bound abuse,
+          // not to take the product down when Supabase hiccups.
+          leftValue: "={{ (() => { const b = $json || {}; const c = $('Verify Twilio Signature').first().json; return (b.tenant_hour || 0) < c.max_sms_per_hour && (b.tenant_day || 0) < c.max_sms_per_day && (b.lead_hour || 0) < c.max_sms_per_lead_per_hour && (b.lead_day || 0) < c.max_sms_per_lead_per_day; })() }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    looseTypeValidation: true,
+    options: {},
+  },
+  id: 'if-within-send-budget',
+  name: 'IF Within Send Budget',
+  type: 'n8n-nodes-base.if',
+  typeVersion: 2.2,
+  position: [-100, 60],
+});
+
+add({
+  parameters: { mode: 'runOnceForAllItems', jsCode: CODE_RATE_LIMITED },
+  id: 'flag-rate-limited',
+  name: 'Flag Rate Limited',
+  type: 'n8n-nodes-base.code',
+  typeVersion: 2,
+  position: [-100, 400],
 });
 
 /* --- MODULE 4 ------------------------------------------------------ */
@@ -1687,7 +1777,10 @@ const connections = {
   'Fetch Client Config': { main: [[to('IF Client Config Found')], ERR] },
   'IF Client Config Found': { main: [[to('Verify Twilio Signature')], [to('Flag Unknown Client')]] },
   'Verify Twilio Signature': { main: [[to('IF Intake Authorised')], ERR] },
-  'IF Intake Authorised': { main: [[to('Fetch Conversation History')], [to('Flag Rejected Intake')]] },
+  'IF Intake Authorised': { main: [[to('Check Send Budget')], [to('Flag Rejected Intake')]] },
+  'Check Send Budget': { main: [[to('IF Within Send Budget')], ERR] },
+  'IF Within Send Budget': { main: [[to('Fetch Conversation History')], [to('Flag Rate Limited')]] },
+  'Flag Rate Limited': { main: [[to('Log Error To Supabase')]] },
   'Flag Rejected Intake': { main: [[to('Log Error To Supabase')]] },
   'Flag Unknown Client': { main: [[to('Log Error To Supabase')]] },
 

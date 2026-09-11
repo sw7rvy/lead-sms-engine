@@ -610,6 +610,102 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/rpc/check_send_budget",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_client_id: $json.client_id, p_lead_phone: $('Normalize Lead Payload').first().json.lead_phone }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 15000
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "check-send-budget",
+      "name": "Check Send Budget",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -340,
+        60
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_SUPABASE_CRED_ID",
+          "name": "Supabase account"
+        }
+      },
+      "alwaysOutputData": false,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "within-budget",
+              "leftValue": "={{ (() => { const b = $json || {}; const c = $('Verify Twilio Signature').first().json; return (b.tenant_hour || 0) < c.max_sms_per_hour && (b.tenant_day || 0) < c.max_sms_per_day && (b.lead_hour || 0) < c.max_sms_per_lead_per_hour && (b.lead_day || 0) < c.max_sms_per_lead_per_day; })() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "if-within-send-budget",
+      "name": "IF Within Send Budget",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -100,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Send budget exhausted. Nothing is sent and no model call is made - this runs\n// before the OpenAI node so a rate-limited request costs nothing.\nconst lead = $('Normalize Lead Payload').first().json;\nconst cfg = $('Verify Twilio Signature').first().json;\nconst b = $input.first().json || {};\n\nconst breached = [];\nif (b.tenant_hour >= cfg.max_sms_per_hour) breached.push('tenant ' + b.tenant_hour + '/' + cfg.max_sms_per_hour + ' per hour');\nif (b.tenant_day >= cfg.max_sms_per_day) breached.push('tenant ' + b.tenant_day + '/' + cfg.max_sms_per_day + ' per day');\nif (b.lead_hour >= cfg.max_sms_per_lead_per_hour) breached.push('lead ' + b.lead_hour + '/' + cfg.max_sms_per_lead_per_hour + ' per hour');\nif (b.lead_day >= cfg.max_sms_per_lead_per_day) breached.push('lead ' + b.lead_day + '/' + cfg.max_sms_per_lead_per_day + ' per day');\n\nreturn [{\n  json: {\n    workflow_id: $workflow.id,\n    workflow_name: $workflow.name,\n    execution_id: $execution.id,\n    failed_node: 'IF Within Send Budget',\n    error_message: 'Send budget exhausted for ' + cfg.client_id + ' -> ' + lead.lead_phone +\n      '. Breached: ' + (breached.join('; ') || 'unknown') + '. Channel ' + lead.channel_source + '.',\n    error_stack: null,\n    http_status: 429,\n    payload: JSON.stringify({ counts: b, channel: lead.channel_source, lead_phone: lead.lead_phone }).slice(0, 2000),\n    client_id: cfg.client_id,\n    lead_phone: lead.lead_phone,\n    severity: 'warning',\n    created_at: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "flag-rate-limited",
+      "name": "Flag Rate Limited",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        400
+      ]
+    },
+    {
+      "parameters": {
         "method": "GET",
         "url": "={{ 'https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/conversation_history?select=role,content,created_at&order=created_at.asc&limit=40&client_id=eq.' + encodeURIComponent($json.client_id) + '&lead_phone=eq.' + encodeURIComponent($('Normalize Lead Payload').first().json.lead_phone) }}",
         "sendHeaders": true,
@@ -1649,7 +1745,7 @@
       "main": [
         [
           {
-            "node": "Fetch Conversation History",
+            "node": "Check Send Budget",
             "type": "main",
             "index": 0
           }
@@ -1657,6 +1753,53 @@
         [
           {
             "node": "Flag Rejected Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Send Budget": {
+      "main": [
+        [
+          {
+            "node": "IF Within Send Budget",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Within Send Budget": {
+      "main": [
+        [
+          {
+            "node": "Fetch Conversation History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag Rate Limited",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Rate Limited": {
+      "main": [
+        [
+          {
+            "node": "Log Error To Supabase",
             "type": "main",
             "index": 0
           }
