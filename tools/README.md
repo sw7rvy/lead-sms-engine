@@ -25,7 +25,7 @@ Exit code 0 means everything passed.
 | `test-filter.js <wf>` | Opt-out keyword filter — STOP/CANCEL blocked, `yes` allowed through. |
 | `test-followup.js <wf>` | Cold-lead gate, quiet hours, cadence ladder, STOP/START, persist expression. |
 | `verify-import.js <src> <exported>` | Diffs a round-trip through a real n8n instance. See below. |
-| `dryrun.js <wf> <cfg.json> <out.json>` | Walks a lead through the real node code end to end, stubbing OpenAI/Twilio/Cal.com and emitting the exact Supabase calls n8n would make. |
+| `dryrun.js <wf> <cfg.json> [out.json]` | Walks a lead through the real node code end to end, stubbing OpenAI/Twilio/Cal.com and emitting the exact Supabase calls n8n would make. The route is derived from `wf.connections`, so it cannot drift from the workflow. Omit `twilio_auth_token` from the config to watch the signature gate reject the lead. |
 
 ## Known false positive
 

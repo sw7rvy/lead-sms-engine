@@ -1,182 +1,200 @@
 /**
- * Offline dry run of the workflow.
+ * Walks a lead through the real node code end to end.
  *
- * Executes each Code node's real jsCode and evaluates each HTTP node's real
- * n8n expressions, so what you see is what n8n would actually send.
- * The three external APIs (OpenAI, Twilio, Cal.com) are stubbed; every
- * Supabase call is emitted as JSON for the caller to apply for real.
+ * The path is derived from wf.connections, not hardcoded. An earlier version
+ * listed the steps by hand, and after the security nodes were added it kept
+ * running happily while silently walking a chain that no longer existed --
+ * reporting a confident picture of the wrong workflow. Deriving the route means
+ * the trace is wrong only if the workflow is.
+ *
+ *   node tools/dryrun.js <workflow.json> <tenant-config.json> [emitted.json]
+ *
+ * External APIs are stubbed; every Supabase call is emitted as the exact
+ * request n8n would send.
  */
 const fs = require('fs');
+const crypto = require('crypto');
+
 const wf = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const CFG = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const OUT = process.argv[4] || null;
+
 const node = (n) => {
   const f = wf.nodes.find((x) => x.name === n);
   if (!f) throw new Error('no node named ' + n);
   return f;
 };
 const EXEC = { id: 'dryrun_' + Date.now() };
-const WORKFLOW = { id: 'wf_test', name: wf.name };
+const WORKFLOW = { id: 'wf_dryrun', name: wf.name };
 
-// --- node output registry, so $('Name').first() resolves like n8n ---
 const out = {};
 const $ = (name) => {
   if (!(name in out)) throw new Error('node "' + name + '" has not executed');
-  return { first: () => ({ json: out[name][0] }), all: () => out[name].map((j) => ({ json: j })) };
+  return {
+    first: () => ({ json: out[name][0] }),
+    all: () => out[name].map((j) => ({ json: j })),
+  };
 };
+
+const mkInput = (items) => {
+  const wrapped = items.map((j) => ({ json: j }));
+  return { all: () => wrapped, first: () => wrapped[0], last: () => wrapped[wrapped.length - 1] };
+};
+
+function evalExpr(expr, $json) {
+  if (typeof expr !== 'string' || expr[0] !== '=') return expr;
+  return expr.slice(1).replace(/\{\{([\s\S]*?)\}\}/g, (_, code) =>
+    String(new Function('$json', '$', '$execution', '$workflow', 'return (' + code + ')')(
+      $json, $, EXEC, WORKFLOW)));
+}
+
+const emitted = [];
+
+/* ---------------- per-type executors ---------------- */
 
 function runCode(name, items) {
   const n = node(name);
   const fn = new Function('$input', '$', '$execution', '$workflow', 'console', n.parameters.jsCode);
-  const wrapped = items.map((j) => ({ json: j }));
-  const res = fn(
-    // Mirror n8n's $input surface: all(), first(), last(), itemMatching absent.
-    { all: () => wrapped, first: () => wrapped[0], last: () => wrapped[wrapped.length - 1] },
-    $, EXEC, WORKFLOW,
-    { log: (m) => console.log('      [node log] ' + m) }
-  );
-  out[name] = (res || []).map((r) => r.json);
-  return out[name];
+  const res = fn(mkInput(items), $, EXEC, WORKFLOW, { log: (m) => trace('      log: ' + m) });
+  return (res || []).map((r) => r.json);
 }
 
-function evalExpr(expr, $json) {
-  if (typeof expr !== 'string' || expr[0] !== '=') return expr;
-  return expr.slice(1).replace(/\{\{([\s\S]*?)\}\}/g, (_, code) => {
-    const fn = new Function('$json', '$', '$execution', '$workflow', 'return (' + code + ')');
-    return String(fn($json, $, EXEC, WORKFLOW));
-  });
-}
-
-function evalIf(name, $json) {
+function runIf(name, items) {
   const conds = node(name).parameters.conditions.conditions;
-  return conds.every((c) => {
+  const $json = items[0] || {};
+  const pass = conds.every((c) => {
     const v = evalExpr(c.leftValue, $json);
     return v === 'true' || v === true;
   });
+  return { pass, items };
 }
 
-const emitted = [];
-function http(name, $json) {
+// Stubs for everything that leaves the machine. Supabase calls are recorded
+// verbatim; the three third-party APIs return canned, well-formed responses.
+function runHttp(name, items) {
   const p = node(name).parameters;
-  const rec = {
-    node: name,
-    method: p.method,
-    url: evalExpr(p.url, $json),
-    body: p.jsonBody ? evalExpr(p.jsonBody, $json) : undefined,
-  };
-  emitted.push(rec);
-  console.log('   -> ' + (p.method || 'GET') + ' ' + rec.url.replace(/^https:\/\/[a-z]+\.supabase\.co/, '{supabase}'));
-  if (rec.body) console.log('      body: ' + rec.body.replace(/\s+/g, ' ').slice(0, 300));
-  return rec;
+  const $json = items[0] || {};
+  const url = evalExpr(p.url, $json);
+  const body = p.jsonBody ? evalExpr(p.jsonBody, $json) : undefined;
+  emitted.push({ node: name, method: p.method || 'GET', url, body });
+  trace('      ' + (p.method || 'GET') + ' ' + url.replace(/^https:\/\/[a-z0-9]+\.supabase\.co/, '{supabase}').slice(0, 110));
+
+  if (name === 'Fetch Client Config') return [CFG];
+  if (name === 'Fetch Conversation History') return [];
+  if (name === 'Check Send Budget') return [{ tenant_hour: 0, tenant_day: 0, lead_hour: 0, lead_day: 0 }];
+  if (name === 'OpenAI GPT-4o-mini') {
+    return [{
+      choices: [{ message: { content: JSON.stringify({
+        reply: 'Sorry about the leak! We can be there today 2-4pm. Want me to lock that in?',
+        qualified: true, booking_intent: 'proposed', booking_start: null,
+        notes: 'Active leak under kitchen sink, wants same-day.',
+      }) } }],
+      usage: { total_tokens: 480 },
+    }];
+  }
+  if (name === 'Cal.com Create Booking') return [{ uid: 'bk_stub', startTime: '2026-09-13T18:00:00Z' }];
+  return [{}];
 }
 
-const step = (n, s) => console.log('\n[' + n + '] ' + s);
+function runTwilio(name, items) {
+  const p = node(name).parameters;
+  const $json = items[0] || {};
+  trace('      from ' + evalExpr(p.from, $json) + ' -> ' + evalExpr(p.to, $json));
+  trace('      "' + evalExpr(p.message, $json) + '"');
+  return [{ sid: 'SM_stub_outbound' }];
+}
 
-/* ================= INBOUND SMS FROM A NEW LEAD ================= */
+function runSheets(name, items) {
+  const cols = node(name).parameters.columns.value;
+  const $json = items[0] || {};
+  for (const k of Object.keys(cols)) {
+    trace('      ' + k.padEnd(15) + '= ' + String(evalExpr(cols[k], $json)).slice(0, 70));
+  }
+  return items;
+}
+
+/* ---------------- the walk ---------------- */
+
+let depth = 0;
+const lines = [];
+const trace = (s) => { lines.push(s); console.log(s); };
+
+const TERMINAL = new Set(['Log Error To Supabase', 'Respond Onboarding OK', 'Sweep Complete']);
+
+function walk(name, items, step) {
+  const n = node(name);
+  const kind = n.type.replace('n8n-nodes-base.', '');
+  let produced = items;
+  let branch = 0;
+
+  switch (kind) {
+    case 'code': produced = runCode(name, items); break;
+    case 'httpRequest': produced = runHttp(name, items); break;
+    case 'twilio': produced = runTwilio(name, items); break;
+    case 'googleSheets': produced = runSheets(name, items); break;
+    case 'if': {
+      const r = runIf(name, items);
+      branch = r.pass ? 0 : 1;
+      produced = r.items;
+      trace('  [' + step + '] ' + name + '  -> ' + (r.pass ? 'true' : 'FALSE'));
+      break;
+    }
+    default: break;
+  }
+  if (kind !== 'if') trace('  [' + step + '] ' + name + (produced.length !== 1 ? '  (' + produced.length + ' items)' : ''));
+
+  if (TERMINAL.has(name)) { trace('  [end] ' + name); return; }
+
+  const conn = wf.connections[name];
+  if (!conn || !conn.main[branch] || conn.main[branch].length === 0) {
+    trace('  [end] no outgoing connection from ' + name + ' on output ' + branch);
+    return;
+  }
+  // Follow the first target on the chosen output; error outputs are not walked.
+  const next = conn.main[branch][0].node;
+  out[name] = produced;
+  walk(next, produced, step + 1);
+}
+
+/* ---------------- entry ---------------- */
+
 const INBOUND = {
   body: {
-    MessageSid: 'SM' + 'test'.padEnd(30, '0'),
+    MessageSid: 'SMdryrun0000000000000000000000',
     From: '+15558675309',
-    To: '+15005550006',          // matches test_client_001
-    Body: 'Hi - kitchen sink is leaking under the cabinet, water everywhere. Can someone come out today?',
+    To: CFG.twilio_phone_number,
+    Body: 'Kitchen sink is leaking under the cabinet. Can someone come out today?',
     NumMedia: '0',
   },
+  headers: { host: 'n8n.example.com', 'x-forwarded-proto': 'https' },
+  webhookUrl: 'https://n8n.example.com/webhook/twilio-inbound-sms',
 };
 
-console.log('='.repeat(70));
-console.log('DRY RUN :: inbound SMS from a brand-new lead');
-console.log('='.repeat(70));
-console.log('inbound: "' + INBOUND.body.Body + '"');
-console.log('from ' + INBOUND.body.From + ' to ' + INBOUND.body.To);
-
-step(1, 'IF Actionable Inbound SMS');
-const actionable = evalIf('IF Actionable Inbound SMS', INBOUND);
-console.log('   actionable = ' + actionable);
-if (!actionable) { console.log('DROPPED'); process.exit(0); }
-
-step(2, 'Normalize Lead Payload');
-const norm = runCode('Normalize Lead Payload', [INBOUND])[0];
-console.log('   channel=' + norm.channel_source + '  lead=' + norm.lead_phone + '  tenant=' + norm.client_id_or_number);
-
-step(3, 'Fetch Client Config  [REAL - caller executes]');
-http('Fetch Client Config', norm);
-// Row as it exists in the live DB (seeded earlier).
-out['Fetch Client Config'] = [JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))];
-const cfg = out['Fetch Client Config'][0];
-console.log('   resolved: ' + cfg.business_name + '  cadence=' + JSON.stringify(cfg.followup_cadence_hours));
-
-step(4, 'IF Client Config Found');
-console.log('   found = ' + evalIf('IF Client Config Found', cfg));
-
-step(5, 'Fetch Conversation History  [REAL - caller executes]');
-http('Fetch Conversation History', cfg);
-out['Fetch Conversation History'] = [];   // new lead, no prior turns
-console.log('   history rows = 0 (new lead)');
-
-step(6, 'Build OpenAI Messages');
-const msgs = runCode('Build OpenAI Messages', out['Fetch Conversation History'])[0];
-console.log('   model=' + msgs.model + '  messages=' + msgs.messages.length + '  turn=' + msgs._meta.turn);
-console.log('   --- system prompt sent to the model ---');
-console.log(msgs.messages[0].content.split('\n').map((l) => '   | ' + l).join('\n'));
-console.log('   --- user turn ---');
-console.log('   | ' + msgs.messages[1].content);
-
-step(7, 'OpenAI GPT-4o-mini  [STUBBED]');
-http('OpenAI GPT-4o-mini', msgs);
-const STUB = {
-  reply: 'Sorry about the leak! Shut the valve under the sink if you can. We can be there today 2-4pm - want me to lock that in? What suburb are you in?',
-  qualified: true,
-  booking_intent: 'proposed',
-  booking_start: null,
-  duration_minutes: 60,
-  lead_name: null,
-  lead_email: null,
-  notes: 'Active leak under kitchen sink, wants same-day. Suburb not yet confirmed.',
-};
-out['OpenAI GPT-4o-mini'] = [{
-  choices: [{ message: { content: JSON.stringify(STUB) } }],
-  usage: { total_tokens: 512 },
-}];
-console.log('   stubbed reply: "' + STUB.reply + '" (' + STUB.reply.length + ' chars)');
-
-step(8, 'Parse AI Response');
-const ai = runCode('Parse AI Response', out['OpenAI GPT-4o-mini'])[0];
-console.log('   qualified=' + ai.qualified + '  intent=' + ai.booking_intent +
-  '  booking_ready=' + ai.booking_ready + '  reply_len=' + ai.reply.length);
-
-step(9, 'Twilio Send SMS  [STUBBED]');
-const tw = node('Twilio Send SMS').parameters;
-console.log('   from: ' + evalExpr(tw.from, ai));
-console.log('   to:   ' + evalExpr(tw.to, ai));
-console.log('   msg:  ' + evalExpr(tw.message, ai));
-out['Twilio Send SMS'] = [{ sid: 'SM_stub_outbound_0001' }];
-
-step(10, 'Persist Conversation Turn  [REAL - caller executes]');
-http('Persist Conversation Turn', out['Twilio Send SMS'][0]);
-out['Persist Conversation Turn'] = [{}];
-
-step(11, 'IF Booking Confirmed');
-const booked = evalIf('IF Booking Confirmed', {});
-console.log('   booking_ready = ' + booked + '  -> ' + (booked ? 'Cal.com' : 'skip to logging'));
-
-step(12, 'Build Sheet Row');
-const row = runCode('Build Sheet Row', [{}])[0];
-console.log('   Status="' + row.Status + '"  next_nudge=' + row._thread.next_followup_at);
-
-step(13, 'Append Lead To Google Sheet  [STUBBED]');
-const cols = node('Append Lead To Google Sheet').parameters.columns.value;
-for (const k of Object.keys(cols)) {
-  console.log('   ' + k.padEnd(15) + ' = ' + String(evalExpr(cols[k], row)).slice(0, 90));
+// Sign it the way Twilio would, so the signature gate sees a genuine request.
+if (CFG.twilio_auth_token) {
+  const b = INBOUND.body;
+  INBOUND.headers['x-twilio-signature'] = crypto.createHmac('sha1', CFG.twilio_auth_token)
+    .update(INBOUND.webhookUrl + Object.keys(b).sort().map((k) => k + b[k]).join(''), 'utf8')
+    .digest('base64');
+} else {
+  console.log('  NOTE: tenant config has no twilio_auth_token, so the signature gate');
+  console.log('        will reject this lead. That is the production behaviour.\n');
 }
 
-step(14, 'Upsert Lead Thread State  [REAL - caller executes]');
-http('Upsert Lead Thread State', row);
+const ENTRY = 'Twilio Inbound SMS Webhook';
+out[ENTRY] = [INBOUND];
 
-step(15, 'IF Followup Sweep Run');
-console.log('   from sweep = ' + evalIf('IF Followup Sweep Run', {}) + ' (webhook run -> ends here)');
+console.log('='.repeat(70));
+console.log('DRY RUN :: inbound SMS, path derived from wf.connections');
+console.log('='.repeat(70));
+console.log('  "' + INBOUND.body.Body + '"');
+console.log('  ' + INBOUND.body.From + ' -> ' + INBOUND.body.To + '\n');
+
+walk(wf.connections[ENTRY].main[0][0].node, [INBOUND], 1);
 
 console.log('\n' + '='.repeat(70));
-console.log('Supabase calls to apply for real:');
+console.log('Supabase calls this execution would make:');
 for (const e of emitted.filter((x) => x.url.includes('supabase'))) {
   console.log('  ' + e.method + ' ' + e.url.split('/rest/v1/')[1].split('?')[0]);
 }
-fs.writeFileSync(process.argv[4], JSON.stringify(emitted, null, 2));
-console.log('written to ' + process.argv[4]);
+if (OUT) { fs.writeFileSync(OUT, JSON.stringify(emitted, null, 2)); console.log('emitted -> ' + OUT); }
