@@ -82,7 +82,7 @@
     <a class="btn" href="https://github.com/sw7rvy/lead-sms-engine/blob/main/multi-channel-lead-sms-booking-engine.json">Workflow JSON</a>
   </div>
   <div class="stats">
-    <div class="stat"><b>37</b><span>workflow nodes</span></div>
+    <div class="stat"><b>43</b><span>workflow nodes</span></div>
     <div class="stat"><b>4</b><span>intake channels</span></div>
     <div class="stat"><b>3</b><span>nudges before cold</span></div>
     <div class="stat"><b>2.38.5</b><span>n8n verified</span></div>
@@ -104,13 +104,15 @@
   <h2>How it works</h2>
 <pre><code>Missed call ──┐
 Inbound SMS ──┤
-Web form ─────┼──► Normalize ──► Resolve tenant ──► Load history ──► GPT-4o-mini
-Lead email ───┘                        │                                  │
-                                       └─ unknown ─► error_log      Twilio reply
+Web form ─────┼──► Normalize ──► Resolve tenant ──► Authenticate ──► Send budget
+Lead email ───┘                        │                    │             │
+                                       └─ unknown ──┬── forged            │ within
+                                                    ▼                     ▼
+                                                error_log ◄── capped   GPT-4o-mini
                                                                           │
-                     ┌──── booking ready ────┐                   Persist the turn
+                     ┌──── booking ready ────┐                     Twilio reply
                      │                       │                            │
-               Cal.com booking           (keep asking)              lead_threads
+               Cal.com booking           (keep asking)           Persist the turn
                      │                       │                            │
                      └────► Google Sheets ◄──┘        30-min sweep ──► re-engage</code></pre>
   <p>All four channels converge on one normalizer, so there is a single
@@ -127,6 +129,27 @@ Lead email ───┘                        │                              
   either is downgraded and the bot keeps asking.</p>
   <p>A failed booking still lands in the sheet as <code>Booking Failed</code> and
   the thread stays active, rather than the lead silently disappearing.</p>
+</section>
+
+<section>
+  <h2>Not trusting the caller</h2>
+  <p>Two of the intake endpoints are public and name their tenant in the request
+  body. Left open, anyone who found the URL could pick both the business and the
+  destination number, and have a text sent from that business's own phone number.
+  That is not a billing problem — it is the client's liability, at statutory
+  damages per message.</p>
+  <p>So nothing is taken on trust. Web-form leads carry a per-tenant secret.
+  Twilio's own webhooks are checked against <code>X-Twilio-Signature</code>,
+  recomputed and compared in constant time. Both gates fail closed: no secret, no
+  token, no send.</p>
+  <div class="note">Signature checking is the only thing standing between a forged
+  <code>From</code> field and a text sent from a client's number. It is on by
+  default and a tenant has to opt out of it deliberately.</div>
+  <p>Authentication decides whether a request is real. It does not bound what
+  happens when a real-looking one is wrong — a leaked secret, a runaway loop, a
+  plain bug. So sends are capped too: per business, and more tightly per person.
+  <strong>No single lead can be messaged more than four times an hour or ten times
+  a day</strong>, whatever the rest of the system believes.</p>
 </section>
 
 <section>
@@ -163,10 +186,12 @@ Lead email ───┘                        │                              
   <p>The workflow JSON is generated, not hand-edited. A build script is the source
   of truth, and a test suite runs the real node code against real payloads.</p>
 <pre><code>node tools/verify-all.js     # rebuild, then run every check</code></pre>
-  <p>That suite caught three bugs that static review missed — including
+  <p>That suite caught six defects static review missed. One was
   <code>$json</code> used in three all-items Code nodes, which n8n only defines in
-  per-item mode. One of them was the error handler itself, so failures would have
-  vanished instead of being logged.</p>
+  per-item mode — and one of those was the error handler, so failures would have
+  vanished instead of being logged. Another was a booking body that Cal.com
+  rejects only when the model happens to be terse, which would have read as
+  intermittent. The last two were the open endpoints above.</p>
 </section>
 
 <footer>

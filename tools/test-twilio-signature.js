@@ -4,9 +4,10 @@
  * target of the caller's choosing. "Verify Twilio Signature" closes that by
  * validating X-Twilio-Signature.
  *
- * HMAC-SHA1 is hand-implemented in the node (the Code sandbox blocks
- * require('crypto')), so it is checked here against RFC 2202 test vectors and
- * Twilio's own documented example before any behavioural assertion.
+ * The node prefers node:crypto and falls back to an in-node HMAC-SHA1, because
+ * the Code sandbox blocks require('crypto') unless NODE_FUNCTION_ALLOW_BUILTIN
+ * is set. The fallback primitives are checked against RFC 2202 vectors and
+ * against node:crypto itself before any behavioural assertion.
  */
 const fs = require('fs');
 const crypto = require('crypto');
@@ -54,9 +55,10 @@ for (const s of ['', 'f', 'fo', 'foo', 'foob', 'fooba', 'foobar']) {
   check('base64(' + JSON.stringify(s) + ')', mine === ref, mine + ' != ' + ref);
 }
 
-/* ---------- 4. Twilio's documented example ---------- */
-// From Twilio's security docs: the canonical worked example.
-console.log('--- Twilio documented example ---');
+/* ---------- 4. the canonical string Twilio specifies ---------- */
+// Constructed here, not copied from Twilio's docs: the assertion is against an
+// independent OpenSSL HMAC over the string their spec defines.
+console.log('--- canonical signing string ---');
 const TOKEN = '12345';
 const URL = 'https://mycompany.com/myapp.php?foo=1&bar=2';
 const PARAMS = { Digits: '1234', To: '+18005551212', From: '+14158675310', Caller: '+14158675310', CallSid: 'CA1234567890ABCDE' };

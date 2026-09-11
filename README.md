@@ -8,7 +8,7 @@ Multi-tenant: one workflow instance serves many client businesses, each with its
 own Twilio number, Cal.com account, qualification rules, business hours and
 Google Sheet, all held in Supabase.
 
-37 functional nodes. Verified against n8n **2.38.5**.
+43 functional nodes. Verified against n8n **2.38.5**.
 
 ---
 
@@ -19,17 +19,25 @@ Typeform ──────────────► Extract profile ──►
 
 Missed call ──┐
 IMAP lead ────┤
-Web form ─────┼──► Normalize ──► Resolve tenant ──► Load history ──► Build prompt
-Inbound SMS ──┘                        │                                  │
-                                       └─ no match ─► error_log      GPT-4o-mini
-                                                                          │
-                    ┌──── booking_ready ────┐                        Parse + clamp
-                    │                       │                             │
-              Cal.com booking          (skip)                       Twilio send SMS
-                    │                       │                             │
-                    └───────► Sheets ◄──────┘                    Persist both turns
+Web form ─────┼──► Normalize ──► Resolve tenant ──► Verify signature ──► Authorised?
+Inbound SMS ──┘                        │                                      │
+                                       └─ no match ──┐         unauthorised ──┤
+                                                     ▼                        ▼
+                                                 error_log              Send budget?
+                                                     ▲                        │
+                                          capped ────┘                    within
+                                                                              │
+                                              Load history ──► Build prompt ──┘
+                                                                    │
+                    ┌──── booking_ready ────┐                  GPT-4o-mini
+                    │                       │                       │
+              Cal.com booking          (skip)                  Parse + clamp
+                    │                       │                       │
+                    └───────► Sheets ◄──────┘               Twilio send SMS
+                                 │                                  │
+                          lead_threads                     Persist both turns
                                  │
-                          lead_threads ──► (30 min sweep) ──► re-engagement nudge
+                                 └──► (30 min sweep) ──► re-engagement nudge
 ```
 
 Every external call has `onError: continueErrorOutput` with 3 retries; the red
@@ -82,6 +90,39 @@ conversation chain uses `$('Node').first()` throughout, which is only correct
 with one lead in flight per pass. `IF Followup Sweep Run` keeps webhook traffic
 out of the loop.
 
+## Security
+
+Three layers. The first two decide whether a request is genuine; the third bounds
+what happens if one gets through anyway.
+
+**Intake is authenticated.** `/webhook/web-lead` is public and the tenant is named in
+the request body, so without a gate any caller could pick both the tenant and the
+destination number and have SMS sent from that tenant's Twilio number. Web-form leads
+must present a secret matching `client_configs.webhook_secret`; a tenant with a NULL
+secret cannot receive web-form leads at all.
+
+**Twilio webhooks are signature-checked.** The voice and SMS endpoints otherwise accept
+a forged `From`/`To`. `Verify Twilio Signature` recomputes `X-Twilio-Signature` — the
+called URL, then every POST parameter as `key+value` in ascending key order, HMAC-SHA1
+with the tenant's auth token — and compares in constant time.
+
+The node prefers `node:crypto` and falls back to an in-node HMAC-SHA1, because the Code
+sandbox blocks `require` unless `NODE_FUNCTION_ALLOW_BUILTIN=crypto` is set on the host.
+Setting it upgrades you to OpenSSL with no workflow change. The fallback is verified
+against RFC 2202 vectors and `node:crypto`, not trusted.
+
+**Outbound sends are capped.** 60/hour and 500/day per tenant; **4/hour and 10/day to any
+single lead**. The per-lead cap is the one that matters — it bounds how hard one person
+can be messaged regardless of what upstream believes. Checked before the OpenAI call, so
+a capped request costs nothing.
+
+Both intake gates **fail closed**. The send budget deliberately does not: a failed budget
+read allows the send, because these caps bound abuse rather than metering, and blocking
+every send during a Supabase outage is a worse failure than the one being prevented.
+
+Rejections are written to `error_log` — 401 for unauthorised intake, 429 for a breached
+cap — rather than dropped, because repeated hits on one tenant are someone probing.
+
 ## Compliance
 
 `STOP`, `STOPALL`, `UNSUBSCRIBE`, `CANCEL`, `QUIT`, `END`, `REVOKE`, `OPTOUT` set
@@ -101,7 +142,7 @@ psql "$SUPABASE_URL" -f supabase-schema.sql
 ```
 
 Creates `client_configs`, `conversation_history`, `lead_threads`, `error_log`,
-with RLS enabled and no policies. n8n connects with the **service_role** key,
+the `check_send_budget` function, and RLS enabled with no policies. n8n connects with the **service_role** key,
 which bypasses RLS; the anon key is denied on every table. This matters —
 `client_configs` stores per-tenant Cal.com API keys in plaintext.
 
@@ -134,7 +175,19 @@ the reply comes from the Twilio node at the end of the conversation chain, which
 is what lets the model control it.
 
 **5. Add a tenant** via the Typeform webhook, or insert a `client_configs` row
-directly.
+directly. Two columns gate traffic and both fail closed:
+
+| Column | Without it |
+|---|---|
+| `twilio_auth_token` | **every inbound call and SMS is rejected** |
+| `webhook_secret` | web-form leads are rejected |
+
+Get the auth token from the Twilio console under Account Info. Any live web form
+must send the tenant's `webhook_secret` in its POST body as `secret` or `token`.
+
+Set `twilio_verify_signatures = false` to bypass signature checking for local
+testing. Never in production — it is the only thing standing between a forged
+`From` and an SMS sent from the client's number.
 
 ---
 
@@ -175,8 +228,7 @@ were inspected.
 Not yet exercised against live APIs: OpenAI JSON-mode output on the real prompt,
 Twilio send, Cal.com booking. Everything upstream of those three calls is tested.
 
-Three bugs were caught by executing the node code rather than reading it, all
-fixed:
+Six defects were caught by executing the code rather than reading it, all fixed:
 
 - `$json` referenced in three `runOnceForAllItems` Code nodes. n8n only defines
   it in `runOnceForEachItem`, so each would throw on every run. `Handle API
@@ -184,3 +236,8 @@ fixed:
   `error_log`.
 - Sticky notes stored literal `\n` instead of newlines.
 - Missing top-level workflow `id`, which `n8n import:workflow` requires.
+- Cal.com rejects an empty `responses.notes` with a 400, and the parser emitted
+  exactly that whenever the model returned no summary — so bookings would have
+  failed only on terse replies, which looks intermittent.
+- `/webhook/web-lead` accepted an attacker-chosen tenant and target number.
+- The Twilio webhooks accepted a forged `From`/`To`.
