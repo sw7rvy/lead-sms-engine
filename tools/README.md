@@ -29,6 +29,9 @@ so any of them can gate CI on its own.
 | `test-intake-auth.js <wf>` | The web-form secret gate — every abuse shape blocked, legitimate traffic through, other channels unaffected. |
 | `test-twilio-signature.js <wf>` | `X-Twilio-Signature` validation. Checks the HMAC-SHA1 primitives against RFC 2202 and `node:crypto` before asserting behaviour. |
 | `test-send-budget.js <wf>` | Outbound caps per tenant and per lead, boundary conditions, and that the check sits upstream of the OpenAI node. |
+| `test-auth-topology.js <wf>` | Structural: every node that changes something outside n8n must be reachable only through an authentication gate. Exemptions are listed with reasons. |
+| `check-docs.js <wf>` | Documentation against the artifact — stated node counts, every tool documented, every suite wired, no workaround documented for a fixed problem. |
+| `verify-all.js` | Rebuilds the workflow, then runs every check above. The entry point; exits non-zero if anything fails. |
 | `verify-import.js <src> <exported>` | Diffs a round-trip through a real n8n instance. See below. |
 | `dryrun.js <wf> <cfg.json> [out.json]` | Walks a lead through the real node code end to end, stubbing OpenAI/Twilio/Cal.com and emitting the exact Supabase calls n8n would make. The route is derived from `wf.connections`, so it cannot drift from the workflow. Omit `twilio_auth_token` from the config to watch the signature gate reject the lead. |
 
