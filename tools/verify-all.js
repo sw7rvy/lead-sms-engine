@@ -56,6 +56,7 @@ ok = run('API contracts', 'test-calcom-payload.js', [WF]) && ok;
 ok = run('intake authorisation', 'test-intake-auth.js', [WF]) && ok;
 ok = run('twilio signature', 'test-twilio-signature.js', [WF]) && ok;
 ok = run('send budget', 'test-send-budget.js', [WF]) && ok;
+ok = run('auth topology', 'test-auth-topology.js', [WF]) && ok;
 
 console.log('\n' + '='.repeat(60));
 console.log(ok ? 'ALL CHECKS PASSED' : 'FAILURES - see above');

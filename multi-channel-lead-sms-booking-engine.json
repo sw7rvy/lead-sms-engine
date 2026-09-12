@@ -167,13 +167,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/client_configs?on_conflict=client_id",
+        "url": "https://uhfeehdwxbzdxvltjxbx.supabase.co/rest/v1/client_configs",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Prefer",
-              "value": "resolution=merge-duplicates,return=representation"
+              "value": "return=representation"
             },
             {
               "name": "Content-Type",

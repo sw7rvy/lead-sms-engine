@@ -976,11 +976,16 @@ add({
 add({
   parameters: Object.assign({
     method: 'POST',
-    url: SUPA + '/rest/v1/client_configs?on_conflict=client_id',
+    // Deliberately NOT an upsert. This endpoint is public, so merge-duplicates
+    // let an unauthenticated POST with a known client_id overwrite a live
+    // tenant's system_prompt_rules, google_sheet_id and calcom_api_key. A
+    // conflict now returns 409 and lands in error_log. Changing an existing
+    // tenant is an authenticated admin action, not a form resubmit.
+    url: SUPA + '/rest/v1/client_configs',
     sendHeaders: true,
     headerParameters: {
       parameters: [
-        { name: 'Prefer', value: 'resolution=merge-duplicates,return=representation' },
+        { name: 'Prefer', value: 'return=representation' },
         { name: 'Content-Type', value: 'application/json' },
       ],
     },
